@@ -58,7 +58,7 @@ class AuthService {
         await user.sendEmailVerification();
       }
 
-      return loadCurrentProfile();
+      return await loadCurrentProfile();
     } on FirebaseFunctionsException catch (error) {
       throw AuthServiceException(
         error.message ?? 'Registration failed. Please try again.',
@@ -78,7 +78,7 @@ class AuthService {
         password: password,
       );
 
-      return loadCurrentProfile();
+      return await loadCurrentProfile();
     } on FirebaseAuthException catch (error) {
       throw AuthServiceException(_authErrorMessage(error));
     } on FirebaseException catch (error) {
@@ -155,7 +155,7 @@ class AuthService {
       await user.updateDisplayName(name);
       await user.reload();
 
-      return loadCurrentProfile();
+      return await loadCurrentProfile();
     } on FirebaseAuthException catch (error) {
       throw AuthServiceException(_authErrorMessage(error));
     } on FirebaseException catch (error) {

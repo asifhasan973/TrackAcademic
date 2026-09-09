@@ -8,3 +8,15 @@ typings/
 # Node.js dependency directory
 node_modules/
 *.local
+
+# Emulator data and logs
+emulator-data/
+*-debug.log*
+
+# Environment and credentials
+.env*
+*.env
+!.env.example
+!*.env.example
+*service-account*.json
+*serviceAccountKey*.json
