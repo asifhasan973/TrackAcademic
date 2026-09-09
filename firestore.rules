@@ -6,6 +6,11 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isEmailVerified() {
+      return isSignedIn() &&
+          request.auth.token.email_verified == true;
+    }
+
     function profileExists() {
       return isSignedIn() &&
           exists(
@@ -20,6 +25,11 @@ service cloud.firestore {
           ).data.isActive == true;
     }
 
+    function isVerifiedActiveUser() {
+      return isActiveUser() &&
+          isEmailVerified();
+    }
+
     function isSelf(userId) {
       return isSignedIn() &&
           request.auth.uid == userId;
@@ -32,7 +42,7 @@ service cloud.firestore {
     }
 
     function isCourseTeacher(courseId) {
-      return isActiveUser() &&
+      return isVerifiedActiveUser() &&
           courseExists(courseId) &&
           get(
             /databases/$(database)/documents/courses/$(courseId)
@@ -40,7 +50,7 @@ service cloud.firestore {
     }
 
     function enrollmentExists(courseId) {
-      return isActiveUser() &&
+      return isVerifiedActiveUser() &&
           exists(
             /databases/$(database)/documents/courses/$(courseId)/students/$(request.auth.uid)
           );
@@ -59,6 +69,7 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
+      // Allow user to get own profile during bootstrap/verification checks
       allow get: if isSelf(userId) &&
           isActiveUser();
 
@@ -66,8 +77,9 @@ service cloud.firestore {
 
       allow create, delete: if false;
 
+      // Profile updates require verified email
       allow update: if isSelf(userId) &&
-          isActiveUser() &&
+          isVerifiedActiveUser() &&
           request.resource.data
               .diff(resource.data)
               .affectedKeys()
@@ -89,10 +101,10 @@ service cloud.firestore {
 
       match /deviceTokens/{tokenId} {
         allow read: if isSelf(userId) &&
-            isActiveUser();
+            isVerifiedActiveUser();
 
         allow create: if isSelf(userId) &&
-            isActiveUser() &&
+            isVerifiedActiveUser() &&
             request.resource.data.keys().hasAll([
               'token',
               'platform',
@@ -119,7 +131,7 @@ service cloud.firestore {
             request.resource.data.updatedAt == request.time;
 
         allow update: if isSelf(userId) &&
-            isActiveUser() &&
+            isVerifiedActiveUser() &&
             request.resource.data
                 .diff(resource.data)
                 .affectedKeys()
@@ -128,31 +140,31 @@ service cloud.firestore {
                   'platform',
                   'updatedAt'
                 ]) &&
-            request.resource.data.token is string &&
-            request.resource.data.token.size() > 0 &&
-            request.resource.data.token.size() <= 4096 &&
-            request.resource.data.platform in [
-              'web',
-              'android',
-              'ios',
-              'macos',
-              'windows'
-            ] &&
-            request.resource.data.updatedAt == request.time;
+                request.resource.data.token is string &&
+                request.resource.data.token.size() > 0 &&
+                request.resource.data.token.size() <= 4096 &&
+                request.resource.data.platform in [
+                  'web',
+                  'android',
+                  'ios',
+                  'macos',
+                  'windows'
+                ] &&
+                request.resource.data.updatedAt == request.time;
 
         allow delete: if isSelf(userId) &&
-            isActiveUser();
+            isVerifiedActiveUser();
       }
     }
 
     match /courses/{courseId} {
-      allow get: if isActiveUser() &&
+      allow get: if isVerifiedActiveUser() &&
           (
             resource.data.teacherId == request.auth.uid ||
             isCourseStudent(courseId)
           );
 
-      allow list: if isActiveUser() &&
+      allow list: if isVerifiedActiveUser() &&
           resource.data.teacherId == request.auth.uid;
 
       allow write: if false;
@@ -171,7 +183,7 @@ service cloud.firestore {
     }
 
     match /semesters/{semesterId} {
-      allow read: if isActiveUser();
+      allow read: if isVerifiedActiveUser();
       allow write: if false;
     }
 
@@ -275,13 +287,13 @@ service cloud.firestore {
     }
 
     match /courseJoinRequests/{requestId} {
-      allow get: if isActiveUser() &&
+      allow get: if isVerifiedActiveUser() &&
           (
             resource.data.studentId == request.auth.uid ||
             isCourseTeacher(resource.data.courseId)
           );
 
-      allow list: if isActiveUser() &&
+      allow list: if isVerifiedActiveUser() &&
           (
             resource.data.studentId == request.auth.uid ||
             isCourseTeacher(resource.data.courseId)
@@ -292,10 +304,10 @@ service cloud.firestore {
 
     match /notifications/{userId}/items/{notificationId} {
       allow read: if isSelf(userId) &&
-          isActiveUser();
+          isVerifiedActiveUser();
 
       allow update: if isSelf(userId) &&
-          isActiveUser() &&
+          isVerifiedActiveUser() &&
           request.resource.data
               .diff(resource.data)
               .affectedKeys()
@@ -323,21 +335,21 @@ service cloud.firestore {
     }
 
     match /auditLogs/{logId} {
-      allow read: if isActiveUser() &&
+      allow read: if isVerifiedActiveUser() &&
           resource.data.actorId ==
             request.auth.uid;
 
       allow write: if false;
     }
 
-// Institution IDs are reserved by Cloud Functions
+    // Institution IDs are reserved by Cloud Functions
     // so two accounts cannot use the same ID.
     match /institutionIds/{institutionId} {
       allow read, write: if false;
     }
 
     match /publicConfig/{documentId} {
-      allow read: if isActiveUser();
+      allow read: if isVerifiedActiveUser();
       allow write: if false;
     }
 

@@ -298,9 +298,36 @@ function validateDayIndex(value: unknown): number {
 }
 
 
+async function isUserEmailVerified(
+  uid: string,
+  auth?: {token?: {email_verified?: boolean}},
+): Promise<boolean> {
+  if (auth?.token?.email_verified === true) {
+    return true;
+  }
+
+  try {
+    const userRecord = await getAuth().getUser(uid);
+    return userRecord.emailVerified === true;
+  } catch {
+    return false;
+  }
+}
+
 async function requireActiveUser(
   uid: string,
+  auth?: {token?: {email_verified?: boolean}},
 ): Promise<FirebaseFirestore.DocumentData> {
+  const verified = await isUserEmailVerified(uid, auth);
+
+  if (!verified) {
+    throw new HttpsError(
+      "permission-denied",
+      "A verified email address is required to perform " +
+        "academic operations. Please verify your email.",
+    );
+  }
+
   const database = getFirestore();
 
   const profile = await database
@@ -329,20 +356,25 @@ async function requireActiveUser(
 // Course ownership/enrollment determines authority.
 async function requireActiveTeacher(
   uid: string,
+  auth?: {token?: {email_verified?: boolean}},
 ): Promise<FirebaseFirestore.DocumentData> {
-  return requireActiveUser(uid);
+  return requireActiveUser(uid, auth);
 }
 
 async function requireActiveStudent(
   uid: string,
+  auth?: {token?: {email_verified?: boolean}},
 ): Promise<FirebaseFirestore.DocumentData> {
-  return requireActiveUser(uid);
+  return requireActiveUser(uid, auth);
 }
 
 async function requireOwnedCourse(
   teacherId: string,
   courseId: string,
+  auth?: {token?: {email_verified?: boolean}},
 ): Promise<FirebaseFirestore.DocumentData> {
+  await requireActiveTeacher(teacherId, auth);
+
   const database = getFirestore();
 
   const course = await database
