@@ -1,0 +1,348 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function profileExists() {
+      return isSignedIn() &&
+          exists(
+            /databases/$(database)/documents/users/$(request.auth.uid)
+          );
+    }
+
+    function isActiveUser() {
+      return profileExists() &&
+          get(
+            /databases/$(database)/documents/users/$(request.auth.uid)
+          ).data.isActive == true;
+    }
+
+    function isSelf(userId) {
+      return isSignedIn() &&
+          request.auth.uid == userId;
+    }
+
+    function courseExists(courseId) {
+      return exists(
+        /databases/$(database)/documents/courses/$(courseId)
+      );
+    }
+
+    function isCourseTeacher(courseId) {
+      return isActiveUser() &&
+          courseExists(courseId) &&
+          get(
+            /databases/$(database)/documents/courses/$(courseId)
+          ).data.teacherId == request.auth.uid;
+    }
+
+    function enrollmentExists(courseId) {
+      return isActiveUser() &&
+          exists(
+            /databases/$(database)/documents/courses/$(courseId)/students/$(request.auth.uid)
+          );
+    }
+
+    function isCourseStudent(courseId) {
+      return enrollmentExists(courseId) &&
+          get(
+            /databases/$(database)/documents/courses/$(courseId)/students/$(request.auth.uid)
+          ).data.isActive == true;
+    }
+
+    function canAccessCourse(courseId) {
+      return isCourseTeacher(courseId) ||
+          isCourseStudent(courseId);
+    }
+
+    match /users/{userId} {
+      allow get: if isSelf(userId) &&
+          isActiveUser();
+
+      allow list: if false;
+
+      allow create, delete: if false;
+
+      allow update: if isSelf(userId) &&
+          isActiveUser() &&
+          request.resource.data
+              .diff(resource.data)
+              .affectedKeys()
+              .hasOnly([
+                'displayName',
+                'phone',
+                'photoUrl',
+                'department',
+                'batch',
+                'section',
+                'semester',
+                'notificationPreferences',
+                'updatedAt'
+              ]) &&
+          request.resource.data.displayName is string &&
+          request.resource.data.displayName.size() >= 2 &&
+          request.resource.data.displayName.size() <= 80 &&
+          request.resource.data.updatedAt == request.time;
+
+      match /deviceTokens/{tokenId} {
+        allow read: if isSelf(userId) &&
+            isActiveUser();
+
+        allow create: if isSelf(userId) &&
+            isActiveUser() &&
+            request.resource.data.keys().hasAll([
+              'token',
+              'platform',
+              'createdAt',
+              'updatedAt'
+            ]) &&
+            request.resource.data.keys().hasOnly([
+              'token',
+              'platform',
+              'createdAt',
+              'updatedAt'
+            ]) &&
+            request.resource.data.token is string &&
+            request.resource.data.token.size() > 0 &&
+            request.resource.data.token.size() <= 4096 &&
+            request.resource.data.platform in [
+              'web',
+              'android',
+              'ios',
+              'macos',
+              'windows'
+            ] &&
+            request.resource.data.createdAt == request.time &&
+            request.resource.data.updatedAt == request.time;
+
+        allow update: if isSelf(userId) &&
+            isActiveUser() &&
+            request.resource.data
+                .diff(resource.data)
+                .affectedKeys()
+                .hasOnly([
+                  'token',
+                  'platform',
+                  'updatedAt'
+                ]) &&
+            request.resource.data.token is string &&
+            request.resource.data.token.size() > 0 &&
+            request.resource.data.token.size() <= 4096 &&
+            request.resource.data.platform in [
+              'web',
+              'android',
+              'ios',
+              'macos',
+              'windows'
+            ] &&
+            request.resource.data.updatedAt == request.time;
+
+        allow delete: if isSelf(userId) &&
+            isActiveUser();
+      }
+    }
+
+    match /courses/{courseId} {
+      allow get: if isActiveUser() &&
+          (
+            resource.data.teacherId == request.auth.uid ||
+            isCourseStudent(courseId)
+          );
+
+      allow list: if isActiveUser() &&
+          resource.data.teacherId == request.auth.uid;
+
+      allow write: if false;
+
+      match /students/{studentId} {
+        allow get: if isCourseTeacher(courseId) ||
+            (
+              isSelf(studentId) &&
+              isCourseStudent(courseId)
+            );
+
+        allow list: if isCourseTeacher(courseId);
+
+        allow write: if false;
+      }
+    }
+
+    match /semesters/{semesterId} {
+      allow read: if isActiveUser();
+      allow write: if false;
+    }
+
+    match /attendanceSessions/{sessionId} {
+      allow read: if canAccessCourse(
+        resource.data.courseId
+      );
+
+      allow write: if false;
+
+      match /private/{privateDocument} {
+        allow read, write: if false;
+      }
+    }
+
+    match /attendanceRecords/{recordId} {
+      allow read: if isCourseTeacher(
+            resource.data.courseId
+          ) ||
+          (
+            isCourseStudent(
+              resource.data.courseId
+            ) &&
+            resource.data.studentId ==
+              request.auth.uid
+          );
+
+      allow write: if false;
+    }
+
+    match /attendanceSummaries/{summaryId} {
+      allow read: if isCourseTeacher(
+            resource.data.courseId
+          ) ||
+          (
+            isCourseStudent(
+              resource.data.courseId
+            ) &&
+            resource.data.studentId ==
+              request.auth.uid
+          );
+
+      allow write: if false;
+    }
+
+    match /assessments/{assessmentId} {
+      allow read: if isCourseTeacher(
+            resource.data.courseId
+          ) ||
+          (
+            resource.data.status ==
+              'published' &&
+            isCourseStudent(
+              resource.data.courseId
+            )
+          );
+
+      allow write: if false;
+    }
+
+    match /marks/{markId} {
+      allow read: if isCourseTeacher(
+            resource.data.courseId
+          ) ||
+          (
+            resource.data.published ==
+              true &&
+            resource.data.studentId ==
+              request.auth.uid &&
+            isCourseStudent(
+              resource.data.courseId
+            )
+          );
+
+      allow write: if false;
+    }
+
+    match /schedules/{scheduleId} {
+      allow read: if canAccessCourse(
+        resource.data.courseId
+      );
+
+      allow write: if false;
+    }
+
+    match /academicRecords/{recordId} {
+      allow read: if isCourseTeacher(
+            resource.data.courseId
+          ) ||
+          (
+            resource.data.published ==
+              true &&
+            resource.data.studentId ==
+              request.auth.uid &&
+            isCourseStudent(
+              resource.data.courseId
+            )
+          );
+
+      allow write: if false;
+    }
+
+    match /courseJoinRequests/{requestId} {
+      allow get: if isActiveUser() &&
+          (
+            resource.data.studentId == request.auth.uid ||
+            isCourseTeacher(resource.data.courseId)
+          );
+
+      allow list: if isActiveUser() &&
+          (
+            resource.data.studentId == request.auth.uid ||
+            isCourseTeacher(resource.data.courseId)
+          );
+
+      allow write: if false;
+    }
+
+    match /notifications/{userId}/items/{notificationId} {
+      allow read: if isSelf(userId) &&
+          isActiveUser();
+
+      allow update: if isSelf(userId) &&
+          isActiveUser() &&
+          request.resource.data
+              .diff(resource.data)
+              .affectedKeys()
+              .hasOnly([
+                'isRead',
+                'readAt'
+              ]) &&
+          request.resource.data.isRead is bool &&
+          (
+            (
+              request.resource.data.isRead ==
+                true &&
+              request.resource.data.readAt ==
+                request.time
+            ) ||
+            (
+              request.resource.data.isRead ==
+                false &&
+              request.resource.data.readAt ==
+                null
+            )
+          );
+
+      allow create, delete: if false;
+    }
+
+    match /auditLogs/{logId} {
+      allow read: if isActiveUser() &&
+          resource.data.actorId ==
+            request.auth.uid;
+
+      allow write: if false;
+    }
+
+// Institution IDs are reserved by Cloud Functions
+    // so two accounts cannot use the same ID.
+    match /institutionIds/{institutionId} {
+      allow read, write: if false;
+    }
+
+    match /publicConfig/{documentId} {
+      allow read: if isActiveUser();
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

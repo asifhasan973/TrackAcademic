@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "664949220313",
+    "project_id": "trackademic-0",
+    "storage_bucket": "trackademic-0.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:664949220313:android:80926990418f7d2aeeefc8",
+        "android_client_info": {
+          "package_name": "com.trackademic.trackademic"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD2cl8AmJLduQ4IaCbUf6gM59BeBWBfSuo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
