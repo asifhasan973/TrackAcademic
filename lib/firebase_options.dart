@@ -21,15 +21,9 @@ class DefaultFirebaseOptions {
     }
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for android - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return android;
       case TargetPlatform.iOS:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for ios - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return ios;
       case TargetPlatform.macOS:
         throw UnsupportedError(
           'DefaultFirebaseOptions have not been configured for macos - '
@@ -53,11 +47,29 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyB6GgO1fbAb7pjq3v6-lnBrAjStkTNwFu4',
-    appId: '1:664949220313:web:78405ad6e41393b5eeefc8',
-    messagingSenderId: '664949220313',
-    projectId: 'trackademic-0',
-    authDomain: 'trackademic-0.firebaseapp.com',
-    storageBucket: 'trackademic-0.firebasestorage.app',
+    apiKey: 'AIzaSyC-spr2vGkBf1yhusBn5Z92JrXR679MeLo',
+    appId: '1:195153078397:web:5c3d9fe4f05f8f2447a914',
+    messagingSenderId: '195153078397',
+    projectId: 'trackacademic-c0d1c',
+    authDomain: 'trackacademic-c0d1c.firebaseapp.com',
+    storageBucket: 'trackacademic-c0d1c.firebasestorage.app',
+    measurementId: 'G-F4YP9X5Z83',
+  );
+
+  static const FirebaseOptions android = FirebaseOptions(
+    apiKey: 'AIzaSyACTyGR5fN0IWejPwV_1QiHofLnwoAAum4',
+    appId: '1:195153078397:android:a637ab6e46e61a4347a914',
+    messagingSenderId: '195153078397',
+    projectId: 'trackacademic-c0d1c',
+    storageBucket: 'trackacademic-c0d1c.firebasestorage.app',
+  );
+
+  static const FirebaseOptions ios = FirebaseOptions(
+    apiKey: 'AIzaSyDxKD_8rz1qmBPFfbAF3Y86kTsNoBmgQY8',
+    appId: '1:195153078397:ios:ac03df31e383af0947a914',
+    messagingSenderId: '195153078397',
+    projectId: 'trackacademic-c0d1c',
+    storageBucket: 'trackacademic-c0d1c.firebasestorage.app',
+    iosBundleId: 'com.trackademic.trackademic',
   );
 }

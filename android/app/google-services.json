@@ -1,26 +1,36 @@
 {
   "project_info": {
-    "project_number": "664949220313",
-    "project_id": "trackademic-0",
-    "storage_bucket": "trackademic-0.firebasestorage.app"
+    "project_number": "195153078397",
+    "project_id": "trackacademic-c0d1c",
+    "storage_bucket": "trackacademic-c0d1c.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:664949220313:android:80926990418f7d2aeeefc8",
+        "mobilesdk_app_id": "1:195153078397:android:a637ab6e46e61a4347a914",
         "android_client_info": {
           "package_name": "com.trackademic.trackademic"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "195153078397-crn172ksk7912gvne33kqrsjclcfn09e.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
-          "current_key": "AIzaSyD2cl8AmJLduQ4IaCbUf6gM59BeBWBfSuo"
+          "current_key": "AIzaSyACTyGR5fN0IWejPwV_1QiHofLnwoAAum4"
         }
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "195153078397-crn172ksk7912gvne33kqrsjclcfn09e.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }
