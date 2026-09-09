@@ -224,6 +224,18 @@ class _SessionCard extends StatelessWidget {
 
   const _SessionCard({required this.session, required this.onSubmit});
 
+  bool get canSubmit {
+    final endsAt = session.endsAt;
+    if (endsAt == null) {
+      return true;
+    }
+    final now = DateTime.now();
+    if (now.isAfter(endsAt) && !session.allowLateEntry) {
+      return false;
+    }
+    return true;
+  }
+
   String get remaining {
     final endsAt = session.endsAt;
 
@@ -234,14 +246,16 @@ class _SessionCard extends StatelessWidget {
     final duration = endsAt.difference(DateTime.now());
 
     if (duration.isNegative) {
-      return session.allowLateEntry ? 'Late entry' : '00:00';
+      return session.allowLateEntry
+          ? 'Late entry accepted'
+          : 'Expired (closed)';
     }
 
     final minutes = duration.inMinutes;
 
     final seconds = duration.inSeconds % 60;
 
-    return '$minutes:${seconds.toString().padLeft(2, '0')}';
+    return '$minutes:${seconds.toString().padLeft(2, '0')} remaining';
   }
 
   @override
@@ -274,8 +288,11 @@ class _SessionCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Time remaining: $remaining',
-                    style: const TextStyle(fontWeight: FontWeight.w800),
+                    'Status: $remaining',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w800,
+                      color: canSubmit ? AppColors.textPrimary : Colors.red,
+                    ),
                   ),
                   if (session.requiresGps)
                     const Text(
@@ -286,8 +303,8 @@ class _SessionCard extends StatelessWidget {
               ),
             ),
             FilledButton(
-              onPressed: onSubmit,
-              child: const Text('Mark attendance'),
+              onPressed: canSubmit ? onSubmit : null,
+              child: Text(canSubmit ? 'Mark attendance' : 'Session expired'),
             ),
           ],
         ),

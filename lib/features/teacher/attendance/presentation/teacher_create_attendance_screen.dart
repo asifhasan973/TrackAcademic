@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:trackademic/core/services/teacher_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/features/teacher/attendance/presentation/teacher_attendance_summary_screen.dart';
 
 class TeacherCreateAttendanceScreen extends StatefulWidget {
   final bool showBackButton;
@@ -22,6 +24,7 @@ class _TeacherCreateAttendanceScreenState
   static const _service = TeacherAcademicService();
 
   late Future<_AttendancePageData> _future;
+  final Map<String, String> _sessionPasscodes = {};
 
   @override
   void initState() {
@@ -111,13 +114,20 @@ class _TeacherCreateAttendanceScreenState
           onPressed: data.courses.isEmpty
               ? null
               : () async {
-                  final created = await showDialog<bool>(
-                    context: context,
-                    builder: (context) =>
-                        _CreateSessionDialog(courses: data.courses),
-                  );
+                  final result =
+                      await showDialog<CreateAttendanceSessionResult>(
+                        context: context,
+                        builder: (context) =>
+                            _CreateSessionDialog(courses: data.courses),
+                      );
 
-                  if (created == true) {
+                  if (result != null) {
+                    if (result.passcode != null) {
+                      _sessionPasscodes[result.sessionId] = result.passcode!;
+                      if (mounted) {
+                        await _showPasscodeCreatedDialog(result.passcode!);
+                      }
+                    }
                     setState(_reload);
                   }
                 },
@@ -139,6 +149,7 @@ class _TeacherCreateAttendanceScreenState
             _SessionCard(
               session: session,
               onView: () => _showSession(session),
+              onSummary: () => _showSummary(session),
               onClose: session.status == 'active'
                   ? () => _closeSession(session)
                   : null,
@@ -149,10 +160,93 @@ class _TeacherCreateAttendanceScreenState
     );
   }
 
+  void _showSummary(TeacherAttendanceSession session) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TeacherAttendanceSummaryScreen(session: session),
+      ),
+    );
+  }
+
+  Future<void> _showPasscodeCreatedDialog(String passcode) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.check_circle_rounded, color: AppColors.success),
+            SizedBox(width: AppSpacing.small),
+            Text('Session Created'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Attendance passcode:'),
+            const SizedBox(height: AppSpacing.small),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: AppColors.informationBackground,
+                borderRadius: BorderRadius.circular(AppRadius.medium),
+                border: Border.all(color: AppColors.primary.withAlpha(50)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    passcode,
+                    style: const TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 4,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Copy passcode',
+                    icon: const Icon(Icons.copy_rounded),
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: passcode));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Passcode copied to clipboard'),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: AppSpacing.medium),
+            const Text(
+              'Keep this passcode safe. For security, it will not be displayed again if you reload or leave this screen, but you can reset it while active.',
+              style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            ),
+          ],
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _showSession(TeacherAttendanceSession session) async {
     await showDialog<void>(
       context: context,
-      builder: (context) => _AttendanceMonitorDialog(session: session),
+      builder: (context) => _AttendanceMonitorDialog(
+        session: session,
+        initialPasscode: _sessionPasscodes[session.id],
+        onPasscodeReset: (newCode) {
+          _sessionPasscodes[session.id] = newCode;
+        },
+        onViewSummary: () => _showSummary(session),
+      ),
     );
   }
 
@@ -188,7 +282,30 @@ class _TeacherCreateAttendanceScreenState
         return;
       }
 
+      final closedSession = TeacherAttendanceSession(
+        id: session.id,
+        courseId: session.courseId,
+        courseCode: session.courseCode,
+        courseName: session.courseName,
+        classType: session.classType,
+        status: 'closed',
+        durationMinutes: session.durationMinutes,
+        requiresPasscode: session.requiresPasscode,
+        requiresGps: session.requiresGps,
+        allowLateEntry: session.allowLateEntry,
+        startedAt: session.startedAt,
+        endsAt: session.endsAt,
+      );
+
       setState(_reload);
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) =>
+              TeacherAttendanceSummaryScreen(session: closedSession),
+        ),
+      );
     } on TeacherAcademicServiceException catch (error) {
       if (!mounted) {
         return;
@@ -460,7 +577,7 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
         position = await _getTeacherPosition();
       }
 
-      await _service.createAttendanceSession(
+      final result = await _service.createAttendanceSession(
         courseId: _courseId,
         classType: _classType,
         durationMinutes: duration,
@@ -474,7 +591,7 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
       );
 
       if (mounted) {
-        Navigator.pop(context, true);
+        Navigator.pop(context, result);
       }
     } on TeacherAcademicServiceException catch (error) {
       if (!mounted) {
@@ -504,8 +621,16 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
 
 class _AttendanceMonitorDialog extends StatefulWidget {
   final TeacherAttendanceSession session;
+  final String? initialPasscode;
+  final ValueChanged<String>? onPasscodeReset;
+  final VoidCallback? onViewSummary;
 
-  const _AttendanceMonitorDialog({required this.session});
+  const _AttendanceMonitorDialog({
+    required this.session,
+    this.initialPasscode,
+    this.onPasscodeReset,
+    this.onViewSummary,
+  });
 
   @override
   State<_AttendanceMonitorDialog> createState() =>
@@ -516,6 +641,7 @@ class _AttendanceMonitorDialogState extends State<_AttendanceMonitorDialog> {
   static const _service = TeacherAcademicService();
 
   late Future<_MonitorData> _future;
+  String? _passcode;
 
   Timer? _timer;
   int _ticks = 0;
@@ -523,7 +649,7 @@ class _AttendanceMonitorDialogState extends State<_AttendanceMonitorDialog> {
   @override
   void initState() {
     super.initState();
-
+    _passcode = widget.initialPasscode;
     _reload();
 
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -568,6 +694,10 @@ class _AttendanceMonitorDialogState extends State<_AttendanceMonitorDialog> {
   }
 
   String get _remaining {
+    if (widget.session.status == 'closed') {
+      return 'Closed';
+    }
+
     final endsAt = widget.session.endsAt;
 
     if (endsAt == null) {
@@ -577,7 +707,9 @@ class _AttendanceMonitorDialogState extends State<_AttendanceMonitorDialog> {
     final duration = endsAt.difference(DateTime.now());
 
     if (duration.isNegative) {
-      return '00:00';
+      return widget.session.allowLateEntry
+          ? 'Late entries allowed'
+          : 'Expired (closed)';
     }
 
     final minutes = duration.inMinutes;
@@ -587,13 +719,75 @@ class _AttendanceMonitorDialogState extends State<_AttendanceMonitorDialog> {
     return '$minutes:${seconds.toString().padLeft(2, '0')}';
   }
 
+  Future<void> _resetPasscode() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reset passcode?'),
+        content: const Text(
+          'A new 6-digit passcode will be generated. The current passcode will immediately stop working.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Reset Passcode'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    try {
+      final newPasscode = await _service.resetAttendancePasscode(
+        widget.session.id,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _passcode = newPasscode;
+      });
+
+      widget.onPasscodeReset?.call(newPasscode);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('New passcode: $newPasscode'),
+          action: SnackBarAction(
+            label: 'Copy',
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: newPasscode));
+            },
+          ),
+        ),
+      );
+    } on TeacherAcademicServiceException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text('${widget.session.courseCode} attendance'),
       content: SizedBox(
         width: 760,
-        height: 520,
+        height: 540,
         child: FutureBuilder<_MonitorData>(
           future: _future,
           builder: (context, snapshot) {
@@ -656,6 +850,75 @@ class _AttendanceMonitorDialogState extends State<_AttendanceMonitorDialog> {
                     ],
                   ),
                 ),
+                if (widget.session.requiresPasscode) ...[
+                  const SizedBox(height: AppSpacing.small),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadius.medium),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.key_rounded,
+                          size: 18,
+                          color: AppColors.primary,
+                        ),
+                        const SizedBox(width: AppSpacing.small),
+                        Text(
+                          _passcode != null
+                              ? 'Passcode: $_passcode'
+                              : 'Passcode hidden for security',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                        if (_passcode != null) ...[
+                          const SizedBox(width: AppSpacing.small),
+                          IconButton(
+                            iconSize: 18,
+                            tooltip: 'Copy passcode',
+                            icon: const Icon(Icons.copy_rounded),
+                            onPressed: () {
+                              Clipboard.setData(
+                                ClipboardData(text: _passcode!),
+                              );
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Passcode copied to clipboard'),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                        const Spacer(),
+                        if (widget.session.status == 'active')
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            onPressed: _resetPasscode,
+                            icon: const Icon(Icons.refresh_rounded, size: 16),
+                            label: const Text(
+                              'Reset passcode',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: AppSpacing.regular),
                 Expanded(
                   child:
@@ -724,6 +987,15 @@ class _AttendanceMonitorDialogState extends State<_AttendanceMonitorDialog> {
         ),
       ),
       actions: [
+        if (widget.session.status == 'closed')
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.pop(context);
+              widget.onViewSummary?.call();
+            },
+            icon: const Icon(Icons.analytics_outlined),
+            label: const Text('View Summary'),
+          ),
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text('Close'),
@@ -793,13 +1065,35 @@ class _MonitorData {
 class _SessionCard extends StatelessWidget {
   final TeacherAttendanceSession session;
   final VoidCallback onView;
+  final VoidCallback onSummary;
   final VoidCallback? onClose;
 
   const _SessionCard({
     required this.session,
     required this.onView,
+    required this.onSummary,
     required this.onClose,
   });
+
+  String get _timingLabel {
+    if (session.status == 'closed') {
+      return 'Closed';
+    }
+    final endsAt = session.endsAt;
+    if (endsAt == null) {
+      return 'Active';
+    }
+    final now = DateTime.now();
+    if (now.isAfter(endsAt)) {
+      return session.allowLateEntry
+          ? 'Active (Late entries allowed)'
+          : 'Expired (Submissions closed)';
+    }
+    final duration = endsAt.difference(now);
+    final min = duration.inMinutes;
+    final sec = duration.inSeconds % 60;
+    return 'Active ($min:${sec.toString().padLeft(2, '0')} remaining)';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -825,7 +1119,7 @@ class _SessionCard extends StatelessWidget {
                     ),
                   ),
                   Text(
-                    '${session.classType} · ${session.durationMinutes} min · ${session.status}',
+                    '${session.classType} · ${session.durationMinutes} min · $_timingLabel',
                     style: const TextStyle(color: AppColors.textSecondary),
                   ),
                   if (session.requiresGps)
@@ -837,6 +1131,14 @@ class _SessionCard extends StatelessWidget {
               ),
             ),
             OutlinedButton(onPressed: onView, child: const Text('Monitor')),
+            if (session.status == 'closed') ...[
+              const SizedBox(width: AppSpacing.small),
+              FilledButton.icon(
+                onPressed: onSummary,
+                icon: const Icon(Icons.analytics_outlined),
+                label: const Text('View summary'),
+              ),
+            ],
             if (onClose != null) ...[
               const SizedBox(width: AppSpacing.small),
               FilledButton(

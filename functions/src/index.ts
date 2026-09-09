@@ -1,3 +1,4 @@
+import * as crypto from "crypto";
 import {initializeApp} from "firebase-admin/app";
 import {getAuth} from "firebase-admin/auth";
 import {
@@ -76,6 +77,17 @@ type CreateAttendanceSessionData = {
 
 type CloseAttendanceSessionData = {
   sessionId?: unknown;
+};
+
+type ResetAttendancePasscodeData = {
+  sessionId?: unknown;
+};
+
+type CorrectClosedAttendanceData = {
+  sessionId?: unknown;
+  studentId?: unknown;
+  newStatus?: unknown;
+  reason?: unknown;
 };
 
 type SubmitAttendanceData = {
@@ -282,19 +294,38 @@ function validateTime(
 }
 
 function validateDayIndex(value: unknown): number {
-  if (
-    typeof value !== "number" ||
-    !Number.isInteger(value) ||
-    value < 0 ||
-    value > 6
-  ) {
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 6) {
     throw new HttpsError(
       "invalid-argument",
-      "Day index must be between 0 and 6.",
+      "Day index must be an integer between 0 and 6.",
     );
   }
 
-  return value;
+  return parsed;
+}
+
+function hashPasscode(passcode: string, salt: string): string {
+  return crypto.scryptSync(passcode, salt, 32).toString("hex");
+}
+
+function verifyPasscode(
+  passcode: string,
+  salt: string,
+  expectedHash: string,
+): boolean {
+  try {
+    const candidateHash = hashPasscode(passcode, salt);
+    const candidateBuf = Buffer.from(candidateHash, "hex");
+    const expectedBuf = Buffer.from(expectedHash, "hex");
+    if (candidateBuf.length !== expectedBuf.length) {
+      return false;
+    }
+    return crypto.timingSafeEqual(candidateBuf, expectedBuf);
+  } catch {
+    return false;
+  }
 }
 
 
@@ -1714,21 +1745,34 @@ export const createAttendanceSession =
         );
 
       let passcode: string | null = null;
+      let passcodeHash: string | null = null;
+      let passcodeSalt: string | null = null;
 
       if (requiresPasscode) {
-        passcode = requiredString(
-          request.data.passcode,
-          "Passcode",
-          4,
-          8,
-        );
-
-        if (!/^\d+$/.test(passcode)) {
-          throw new HttpsError(
-            "invalid-argument",
-            "Passcode must contain digits only.",
+        if (
+          request.data.passcode !== undefined &&
+          request.data.passcode !== null &&
+          request.data.passcode !== ""
+        ) {
+          passcode = requiredString(
+            request.data.passcode,
+            "Passcode",
+            4,
+            8,
           );
+
+          if (!/^\d+$/.test(passcode)) {
+            throw new HttpsError(
+              "invalid-argument",
+              "Passcode must contain digits only.",
+            );
+          }
+        } else {
+          passcode = String(crypto.randomInt(100000, 1000000));
         }
+
+        passcodeSalt = crypto.randomBytes(16).toString("hex");
+        passcodeHash = hashPasscode(passcode, passcodeSalt);
       }
 
       let latitude: number | null = null;
@@ -1839,7 +1883,8 @@ export const createAttendanceSession =
       batchWrite.create(
         privateReference,
         {
-          passcode,
+          passcodeHash,
+          passcodeSalt,
           latitude,
           longitude,
           radiusMeters,
@@ -1852,6 +1897,7 @@ export const createAttendanceSession =
 
       return {
         sessionId: reference.id,
+        passcode,
       };
     },
   );
@@ -1971,9 +2017,13 @@ export const submitAttendance =
             20,
           );
 
+        const expectedHash = configuration.passcodeHash;
+        const salt = configuration.passcodeSalt;
+
         if (
-          submittedPasscode !==
-          configuration.passcode
+          typeof expectedHash !== "string" ||
+          typeof salt !== "string" ||
+          !verifyPasscode(submittedPasscode, salt, expectedHash)
         ) {
           throw new HttpsError(
             "permission-denied",
@@ -2785,5 +2835,329 @@ export const publishAssessment =
       return {
         success: true,
       };
+    },
+  );
+
+export const resetAttendancePasscode =
+  onCall<ResetAttendancePasscodeData>(
+    {
+      timeoutSeconds: 30,
+    },
+    async (request) => {
+      const teacherId = request.auth?.uid;
+
+      if (!teacherId) {
+        throw new HttpsError(
+          "unauthenticated",
+          "Sign in first.",
+        );
+      }
+
+      await requireActiveTeacher(teacherId, request.auth);
+
+      const sessionId = requiredString(
+        request.data.sessionId,
+        "Session ID",
+        1,
+        128,
+      );
+
+      const database = getFirestore();
+
+      const sessionReference = database
+        .collection("attendanceSessions")
+        .doc(sessionId);
+
+      const sessionDocument = await sessionReference.get();
+      const session = sessionDocument.data();
+
+      if (!sessionDocument.exists || !session) {
+        throw new HttpsError(
+          "not-found",
+          "Attendance session not found.",
+        );
+      }
+
+      const courseId = String(session.courseId);
+
+      await requireOwnedCourse(
+        teacherId,
+        courseId,
+        request.auth,
+      );
+
+      if (session.status !== "active") {
+        throw new HttpsError(
+          "failed-precondition",
+          "Cannot reset passcode on an inactive or closed session.",
+        );
+      }
+
+      const newPasscode = String(crypto.randomInt(100000, 1000000));
+      const salt = crypto.randomBytes(16).toString("hex");
+      const passcodeHash = hashPasscode(newPasscode, salt);
+
+      const privateReference = sessionReference
+        .collection("private")
+        .doc("config");
+
+      const batch = database.batch();
+
+      batch.set(
+        privateReference,
+        {
+          passcodeHash,
+          passcodeSalt: salt,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        {
+          merge: true,
+        },
+      );
+
+      if (session.requiresPasscode !== true) {
+        batch.update(sessionReference, {
+          requiresPasscode: true,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      const auditReference = database.collection("auditLogs").doc();
+      batch.create(auditReference, {
+        action: "reset_attendance_passcode",
+        sessionId,
+        courseId,
+        actorId: teacherId,
+        actorRole: "teacher",
+        createdAt: FieldValue.serverTimestamp(),
+      });
+
+      await batch.commit();
+
+      return {
+        success: true,
+        passcode: newPasscode,
+      };
+    },
+  );
+
+export const correctClosedAttendance =
+  onCall<CorrectClosedAttendanceData>(
+    {
+      timeoutSeconds: 30,
+    },
+    async (request) => {
+      const teacherId = request.auth?.uid;
+
+      if (!teacherId) {
+        throw new HttpsError(
+          "unauthenticated",
+          "Sign in first.",
+        );
+      }
+
+      await requireActiveTeacher(teacherId, request.auth);
+
+      const sessionId = requiredString(
+        request.data.sessionId,
+        "Session ID",
+        1,
+        128,
+      );
+
+      const studentId = requiredString(
+        request.data.studentId,
+        "Student ID",
+        1,
+        128,
+      );
+
+      const newStatus = requiredString(
+        request.data.newStatus,
+        "Attendance status",
+        4,
+        16,
+      ).toLowerCase();
+
+      const reason = requiredString(
+        request.data.reason,
+        "Correction reason",
+        1,
+        500,
+      ).trim();
+
+      if (
+        newStatus !== "present" &&
+        newStatus !== "late" &&
+        newStatus !== "absent"
+      ) {
+        throw new HttpsError(
+          "invalid-argument",
+          "Invalid attendance status for correction. " +
+            "Must be present, late, or absent.",
+        );
+      }
+
+      if (reason.length === 0) {
+        throw new HttpsError(
+          "invalid-argument",
+          "A non-empty correction reason is required.",
+        );
+      }
+
+      const database = getFirestore();
+
+      const sessionReference = database
+        .collection("attendanceSessions")
+        .doc(sessionId);
+
+      const recordReference = database
+        .collection("attendanceRecords")
+        .doc(`${sessionId}_${studentId}`);
+
+      return await database.runTransaction(async (transaction) => {
+        // --- ALL READS FIRST ---
+        const sessionDoc = await transaction.get(sessionReference);
+        if (!sessionDoc.exists || !sessionDoc.data()) {
+          throw new HttpsError(
+            "not-found",
+            "Attendance session not found.",
+          );
+        }
+
+        const session = sessionDoc.data()!;
+        const courseId = String(session.courseId);
+
+        if (session.status !== "closed") {
+          throw new HttpsError(
+            "failed-precondition",
+            "Attendance corrections can only be made on closed sessions.",
+          );
+        }
+
+        const courseReference = database
+          .collection("courses")
+          .doc(courseId);
+
+        const courseDoc = await transaction.get(courseReference);
+        if (!courseDoc.exists || courseDoc.data()?.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not own this course.",
+          );
+        }
+
+        const recordDoc = await transaction.get(recordReference);
+        if (!recordDoc.exists || !recordDoc.data()) {
+          throw new HttpsError(
+            "not-found",
+            "Attendance record not found.",
+          );
+        }
+
+        const record = recordDoc.data()!;
+
+        // Verify record matches requested session, course, and student
+        if (
+          record.sessionId !== sessionId ||
+          record.courseId !== courseId ||
+          record.studentId !== studentId
+        ) {
+          throw new HttpsError(
+            "invalid-argument",
+            "Attendance record does not match the requested " +
+              "session, course, or student.",
+          );
+        }
+
+        const currentStatus = String(record.status ?? "absent").toLowerCase();
+
+        // Idempotent no-change if status already equals requested
+        if (currentStatus === newStatus) {
+          return {
+            success: true,
+            changed: false,
+            previousStatus: currentStatus,
+            newStatus: currentStatus,
+            message: `Status is already set to ${newStatus}.`,
+          };
+        }
+
+        const summaryReference = database
+          .collection("attendanceSummaries")
+          .doc(`${courseId}_${studentId}`);
+
+        const summaryDoc = await transaction.get(summaryReference);
+        const summary = summaryDoc.data() ?? {};
+
+        // --- ALL WRITES AFTER READS ---
+        const wasAttended =
+          currentStatus === "present" || currentStatus === "late";
+        const isNowAttended =
+          newStatus === "present" || newStatus === "late";
+        const delta = (isNowAttended ? 1 : 0) - (wasAttended ? 1 : 0);
+
+        const previousTotal = Math.max(1, Number(summary.total ?? 1));
+        const previousAttended = Math.max(0, Number(summary.attended ?? 0));
+        const newTotal = previousTotal; // Total classes held remains unchanged!
+        const newAttended = Math.min(
+          newTotal,
+          Math.max(0, previousAttended + delta),
+        );
+        const percentage =
+          newTotal === 0 ? 0 : (newAttended / newTotal) * 100;
+        const attendanceMarks = percentage / 10;
+
+        transaction.update(recordReference, {
+          status: newStatus,
+          previousStatus: currentStatus,
+          correctionReason: reason,
+          correctedBy: teacherId,
+          source: "correction",
+          updatedAt: FieldValue.serverTimestamp(),
+          correctedAt: FieldValue.serverTimestamp(),
+        });
+
+        transaction.set(
+          summaryReference,
+          {
+            courseId,
+            courseCode: session.courseCode ?? "",
+            courseName: session.courseName ?? "",
+            studentId,
+            attended: newAttended,
+            total: newTotal,
+            percentage,
+            attendanceMarks,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        const auditReference = database.collection("auditLogs").doc();
+        transaction.create(auditReference, {
+          action: "correct_closed_attendance",
+          sessionId,
+          courseId,
+          studentId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          previousStatus: currentStatus,
+          newStatus,
+          reason,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+
+        return {
+          success: true,
+          changed: true,
+          previousStatus: currentStatus,
+          newStatus,
+          attended: newAttended,
+          total: newTotal,
+          percentage,
+          attendanceMarks,
+        };
+      });
     },
   );

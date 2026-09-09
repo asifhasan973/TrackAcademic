@@ -219,7 +219,7 @@ class TeacherAcademicService {
     return sessions;
   }
 
-  Future<void> createAttendanceSession({
+  Future<CreateAttendanceSessionResult> createAttendanceSession({
     required String courseId,
     required String classType,
     required int durationMinutes,
@@ -231,7 +231,7 @@ class TeacherAcademicService {
     required double? radiusMeters,
     required bool allowLateEntry,
   }) async {
-    await _call('createAttendanceSession', {
+    final response = await _call('createAttendanceSession', {
       'courseId': courseId,
       'classType': classType,
       'durationMinutes': durationMinutes,
@@ -242,6 +242,33 @@ class TeacherAcademicService {
       'longitude': longitude,
       'radiusMeters': radiusMeters,
       'allowLateEntry': allowLateEntry,
+    });
+
+    return CreateAttendanceSessionResult(
+      sessionId: response['sessionId'] as String? ?? '',
+      passcode: response['passcode'] as String?,
+    );
+  }
+
+  Future<String> resetAttendancePasscode(String sessionId) async {
+    final response = await _call('resetAttendancePasscode', {
+      'sessionId': sessionId,
+    });
+
+    return response['passcode'] as String? ?? '';
+  }
+
+  Future<void> correctClosedAttendance({
+    required String sessionId,
+    required String studentId,
+    required String newStatus,
+    required String reason,
+  }) async {
+    await _call('correctClosedAttendance', {
+      'sessionId': sessionId,
+      'studentId': studentId,
+      'newStatus': newStatus,
+      'reason': reason,
     });
   }
 
@@ -677,12 +704,22 @@ class TeacherAttendanceSession {
   }
 }
 
+class CreateAttendanceSessionResult {
+  final String sessionId;
+  final String? passcode;
+
+  const CreateAttendanceSessionResult({required this.sessionId, this.passcode});
+}
+
 class TeacherAttendanceRecord {
   final String id;
   final String studentId;
   final String institutionId;
   final String studentName;
   final String status;
+  final String source;
+  final String? previousStatus;
+  final String? correctionReason;
   final DateTime? markedAt;
 
   const TeacherAttendanceRecord({
@@ -691,6 +728,9 @@ class TeacherAttendanceRecord {
     required this.institutionId,
     required this.studentName,
     required this.status,
+    required this.source,
+    this.previousStatus,
+    this.correctionReason,
     required this.markedAt,
   });
 
@@ -704,7 +744,10 @@ class TeacherAttendanceRecord {
       institutionId: data['institutionId'] as String? ?? '',
       studentName: data['studentName'] as String? ?? '',
       status: data['status'] as String? ?? '',
-      markedAt: _date(data['markedAt']),
+      source: data['source'] as String? ?? '',
+      previousStatus: _nullableText(data['previousStatus']),
+      correctionReason: _nullableText(data['correctionReason']),
+      markedAt: _date(data['markedAt']) ?? _date(data['updatedAt']),
     );
   }
 }
