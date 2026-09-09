@@ -141,6 +141,12 @@ class _TeacherMarksScreenState extends State<TeacherMarksScreen> {
             _AssessmentCard(
               assessment: assessment,
               onEnterMarks: () => _enterMarks(assessment),
+              onEdit: assessment.status == 'draft'
+                  ? () => _editAssessment(assessment)
+                  : null,
+              onDelete: assessment.status == 'draft'
+                  ? () => _deleteAssessment(assessment)
+                  : null,
               onPublish: assessment.status == 'published'
                   ? null
                   : () => _publish(assessment),
@@ -153,33 +159,321 @@ class _TeacherMarksScreenState extends State<TeacherMarksScreen> {
 
   Future<void> _createAssessment(String courseId) async {
     final nameController = TextEditingController();
-
     final maxController = TextEditingController(text: '20');
+    final dateController = TextEditingController(
+      text: DateTime.now().toIso8601String().substring(0, 10),
+    );
+    String type = 'Quiz';
 
     final result = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Create assessment'),
-        content: SizedBox(
-          width: 420,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Assessment name',
-                  hintText: 'CT 1',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Create assessment'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Assessment name',
+                    hintText: 'e.g. Class Test 1',
+                  ),
                 ),
-              ),
-              const SizedBox(height: AppSpacing.medium),
-              TextField(
-                controller: maxController,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Maximum marks'),
-              ),
-            ],
+                const SizedBox(height: AppSpacing.medium),
+                DropdownButtonFormField<String>(
+                  initialValue: type,
+                  decoration: const InputDecoration(
+                    labelText: 'Assessment type',
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 'Quiz', child: Text('Quiz')),
+                    DropdownMenuItem(value: 'Midterm', child: Text('Midterm')),
+                    DropdownMenuItem(
+                      value: 'Final Exam',
+                      child: Text('Final Exam'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'Assignment',
+                      child: Text('Assignment'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'Presentation',
+                      child: Text('Presentation'),
+                    ),
+                    DropdownMenuItem(value: 'Other', child: Text('Other')),
+                  ],
+                  onChanged: (val) {
+                    if (val != null) {
+                      setDialogState(() => type = val);
+                    }
+                  },
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextField(
+                  controller: maxController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Maximum marks'),
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextField(
+                  controller: dateController,
+                  readOnly: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Date (YYYY-MM-DD)',
+                    suffixIcon: Icon(Icons.calendar_today_rounded),
+                  ),
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: DateTime.now(),
+                      firstDate: DateTime(2000),
+                      lastDate: DateTime(2100),
+                    );
+                    if (picked != null) {
+                      final y = picked.year.toString();
+                      final m = picked.month.toString().padLeft(2, '0');
+                      final d = picked.day.toString().padLeft(2, '0');
+                      setDialogState(() {
+                        dateController.text = '$y-$m-$d';
+                      });
+                    }
+                  },
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final max = double.tryParse(maxController.text);
+                final name = nameController.text.trim();
+                final date = dateController.text.trim();
+
+                if (name.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Please enter an assessment name.'),
+                    ),
+                  );
+                  return;
+                }
+                if (max == null || max <= 0) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Please enter a valid maximum mark.'),
+                    ),
+                  );
+                  return;
+                }
+
+                try {
+                  await _service.createAssessment(
+                    courseId: courseId,
+                    name: name,
+                    type: type,
+                    maxScore: max,
+                    date: date,
+                  );
+
+                  if (context.mounted) {
+                    Navigator.pop(context, true);
+                  }
+                } on TeacherAcademicServiceException catch (error) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text(error.message)));
+                  }
+                }
+              },
+              child: const Text('Create'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    nameController.dispose();
+    maxController.dispose();
+    dateController.dispose();
+
+    if (result == true) {
+      _reload();
+    }
+  }
+
+  Future<void> _editAssessment(TeacherAssessment assessment) async {
+    final nameController = TextEditingController(text: assessment.name);
+    final maxController = TextEditingController(
+      text: assessment.maxScore.toStringAsFixed(0),
+    );
+    final dateController = TextEditingController(
+      text: assessment.date.isNotEmpty
+          ? assessment.date
+          : DateTime.now().toIso8601String().substring(0, 10),
+    );
+    String type = assessment.type.isNotEmpty ? assessment.type : 'Quiz';
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Edit draft assessment'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Assessment name',
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                DropdownButtonFormField<String>(
+                  initialValue: type,
+                  decoration: const InputDecoration(
+                    labelText: 'Assessment type',
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 'Quiz', child: Text('Quiz')),
+                    DropdownMenuItem(value: 'Midterm', child: Text('Midterm')),
+                    DropdownMenuItem(
+                      value: 'Final Exam',
+                      child: Text('Final Exam'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'Assignment',
+                      child: Text('Assignment'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'Presentation',
+                      child: Text('Presentation'),
+                    ),
+                    DropdownMenuItem(value: 'Other', child: Text('Other')),
+                  ],
+                  onChanged: (val) {
+                    if (val != null) {
+                      setDialogState(() => type = val);
+                    }
+                  },
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextField(
+                  controller: maxController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Maximum marks'),
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextField(
+                  controller: dateController,
+                  readOnly: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Date (YYYY-MM-DD)',
+                    suffixIcon: Icon(Icons.calendar_today_rounded),
+                  ),
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate:
+                          DateTime.tryParse(dateController.text) ??
+                          DateTime.now(),
+                      firstDate: DateTime(2000),
+                      lastDate: DateTime(2100),
+                    );
+                    if (picked != null) {
+                      final y = picked.year.toString();
+                      final m = picked.month.toString().padLeft(2, '0');
+                      final d = picked.day.toString().padLeft(2, '0');
+                      setDialogState(() {
+                        dateController.text = '$y-$m-$d';
+                      });
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final max = double.tryParse(maxController.text);
+                final name = nameController.text.trim();
+                final date = dateController.text.trim();
+
+                if (name.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Please enter an assessment name.'),
+                    ),
+                  );
+                  return;
+                }
+                if (max == null || max <= 0) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Please enter a valid maximum mark.'),
+                    ),
+                  );
+                  return;
+                }
+
+                try {
+                  await _service.updateAssessment(
+                    assessmentId: assessment.id,
+                    name: name,
+                    type: type,
+                    maxScore: max,
+                    date: date,
+                  );
+
+                  if (context.mounted) {
+                    Navigator.pop(context, true);
+                  }
+                } on TeacherAcademicServiceException catch (error) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text(error.message)));
+                  }
+                }
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    nameController.dispose();
+    maxController.dispose();
+    dateController.dispose();
+
+    if (result == true) {
+      _reload();
+    }
+  }
+
+  Future<void> _deleteAssessment(TeacherAssessment assessment) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete draft assessment?'),
+        content: Text(
+          'Are you sure you want to delete "${assessment.name}"? '
+          'This will permanently delete this draft assessment and all its entered marks.',
         ),
         actions: [
           TextButton(
@@ -187,42 +481,25 @@ class _TeacherMarksScreenState extends State<TeacherMarksScreen> {
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () async {
-              final max = double.tryParse(maxController.text);
-
-              if (max == null) {
-                return;
-              }
-
-              try {
-                await _service.createAssessment(
-                  courseId: courseId,
-                  name: nameController.text.trim(),
-                  maxScore: max,
-                );
-
-                if (context.mounted) {
-                  Navigator.pop(context, true);
-                }
-              } on TeacherAcademicServiceException catch (error) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(SnackBar(content: Text(error.message)));
-                }
-              }
-            },
-            child: const Text('Create'),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.danger),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
           ),
         ],
       ),
     );
 
-    nameController.dispose();
-    maxController.dispose();
-
-    if (result == true) {
-      _reload();
+    if (confirmed == true) {
+      try {
+        await _service.deleteAssessment(assessment.id);
+        _reload();
+      } on TeacherAcademicServiceException catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(error.message)));
+        }
+      }
     }
   }
 
@@ -355,6 +632,17 @@ class _MarksEditorDialogState extends State<_MarksEditorDialog> {
                         },
                       ),
                     ),
+                    if (widget.assessment.status == 'published') ...[
+                      const SizedBox(width: AppSpacing.small),
+                      IconButton(
+                        tooltip: 'Correct published mark',
+                        icon: const Icon(
+                          Icons.edit_note,
+                          color: AppColors.primary,
+                        ),
+                        onPressed: () => _correctMark(student),
+                      ),
+                    ],
                   ],
                 );
               },
@@ -374,6 +662,116 @@ class _MarksEditorDialogState extends State<_MarksEditorDialog> {
           ),
       ],
     );
+  }
+
+  Future<void> _correctMark(EnrolledStudent student) async {
+    final currentScore = _scores[student.uid] ?? 0.0;
+    final scoreController = TextEditingController(
+      text: currentScore.toStringAsFixed(1),
+    );
+    final reasonController = TextEditingController();
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Correct Mark · ${widget.assessment.name}'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Student: ${student.displayName} (${student.institutionId})',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: AppSpacing.medium),
+              TextField(
+                controller: scoreController,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: InputDecoration(
+                  labelText: 'New score',
+                  suffixText:
+                      '/${widget.assessment.maxScore.toStringAsFixed(1)}',
+                ),
+              ),
+              const SizedBox(height: AppSpacing.medium),
+              TextField(
+                controller: reasonController,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Correction reason',
+                  hintText: 'e.g., Regraded problem 2; adjusted mark',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final newScore = double.tryParse(scoreController.text.trim());
+              final reason = reasonController.text.trim();
+
+              if (newScore == null ||
+                  newScore < 0 ||
+                  newScore > widget.assessment.maxScore) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      'Score must be between 0 and ${widget.assessment.maxScore.toStringAsFixed(1)}.',
+                    ),
+                  ),
+                );
+                return;
+              }
+
+              if (reason.isEmpty) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(
+                    content: Text('A non-empty correction reason is required.'),
+                  ),
+                );
+                return;
+              }
+
+              try {
+                await _service.correctPublishedMark(
+                  assessmentId: widget.assessment.id,
+                  studentId: student.uid,
+                  newScore: newScore,
+                  reason: reason,
+                );
+                if (ctx.mounted) {
+                  Navigator.pop(ctx, true);
+                }
+              } on TeacherAcademicServiceException catch (error) {
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(
+                    ctx,
+                  ).showSnackBar(SnackBar(content: Text(error.message)));
+                }
+              }
+            },
+            child: const Text('Submit correction'),
+          ),
+        ],
+      ),
+    );
+
+    scoreController.dispose();
+    reasonController.dispose();
+
+    if (result == true) {
+      setState(() {
+        _future = _load();
+      });
+    }
   }
 
   Future<void> _save() async {
@@ -421,16 +819,24 @@ class _MarksEditorDialogState extends State<_MarksEditorDialog> {
 class _AssessmentCard extends StatelessWidget {
   final TeacherAssessment assessment;
   final VoidCallback onEnterMarks;
+  final VoidCallback? onEdit;
+  final VoidCallback? onDelete;
   final VoidCallback? onPublish;
 
   const _AssessmentCard({
     required this.assessment,
     required this.onEnterMarks,
+    this.onEdit,
+    this.onDelete,
     required this.onPublish,
   });
 
   @override
   Widget build(BuildContext context) {
+    final dateDisplay = assessment.date.isNotEmpty
+        ? ' · Date: ${assessment.date}'
+        : '';
+
     return Material(
       color: AppColors.surface,
       shape: RoundedRectangleBorder(
@@ -438,9 +844,29 @@ class _AssessmentCard extends StatelessWidget {
         side: const BorderSide(color: AppColors.border),
       ),
       child: ListTile(
-        title: Text('${assessment.name} · ${assessment.courseCode}'),
+        title: Row(
+          children: [
+            Text('${assessment.name} · ${assessment.courseCode}'),
+            const SizedBox(width: AppSpacing.small),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(AppRadius.small),
+              ),
+              child: Text(
+                assessment.type,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
         subtitle: Text(
-          'Maximum: ${assessment.maxScore.toStringAsFixed(0)} · ${assessment.status}',
+          'Maximum: ${assessment.maxScore.toStringAsFixed(0)}$dateDisplay · ${assessment.status}',
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
@@ -451,6 +877,21 @@ class _AssessmentCard extends StatelessWidget {
                 assessment.status == 'published' ? 'View marks' : 'Enter marks',
               ),
             ),
+            if (onEdit != null) ...[
+              const SizedBox(width: AppSpacing.small),
+              IconButton(
+                tooltip: 'Edit assessment',
+                icon: const Icon(Icons.edit_outlined),
+                onPressed: onEdit,
+              ),
+            ],
+            if (onDelete != null) ...[
+              IconButton(
+                tooltip: 'Delete draft assessment',
+                icon: const Icon(Icons.delete_outline, color: AppColors.danger),
+                onPressed: onDelete,
+              ),
+            ],
             if (onPublish != null) ...[
               const SizedBox(width: AppSpacing.small),
               FilledButton(onPressed: onPublish, child: const Text('Publish')),

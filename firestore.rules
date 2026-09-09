@@ -348,6 +348,12 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Schedule locks are internal deterministic conflict documents
+    // managed exclusively by backend transactions.
+    match /scheduleLocks/{lockId} {
+      allow read, write: if false;
+    }
+
     match /publicConfig/{documentId} {
       allow read: if isVerifiedActiveUser();
       allow write: if false;

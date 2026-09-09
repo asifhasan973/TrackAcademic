@@ -451,6 +451,8 @@ class StudentMarkRecord {
   final double score;
   final double maxScore;
   final bool published;
+  final double? previousScore;
+  final String? correctionReason;
 
   const StudentMarkRecord({
     required this.id,
@@ -463,6 +465,8 @@ class StudentMarkRecord {
     required this.score,
     required this.maxScore,
     required this.published,
+    this.previousScore,
+    this.correctionReason,
   });
 
   factory StudentMarkRecord.fromMap(String id, Map<String, dynamic> data) {
@@ -477,6 +481,8 @@ class StudentMarkRecord {
       score: (data['score'] as num?)?.toDouble() ?? 0,
       maxScore: (data['maxScore'] as num?)?.toDouble() ?? 0,
       published: data['published'] as bool? ?? false,
+      previousScore: (data['previousScore'] as num?)?.toDouble(),
+      correctionReason: data['correctionReason'] as String?,
     );
   }
 }

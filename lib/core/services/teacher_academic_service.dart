@@ -88,7 +88,10 @@ class TeacherAcademicService {
     });
   }
 
-  Future<List<EnrolledStudent>> loadCourseStudents(String courseId) async {
+  Future<List<EnrolledStudent>> loadCourseStudents(
+    String courseId, {
+    bool includeInactive = false,
+  }) async {
     final snapshot = await _database
         .collection('courses')
         .doc(courseId)
@@ -99,7 +102,7 @@ class TeacherAcademicService {
         .map(
           (document) => EnrolledStudent.fromMap(document.id, document.data()),
         )
-        .where((student) => student.isActive)
+        .where((student) => includeInactive || student.isActive)
         .toList();
 
     students.sort(
@@ -330,16 +333,130 @@ class TeacherAcademicService {
     return result;
   }
 
-  Future<void> createAssessment({
+  Future<String> createAssessment({
     required String courseId,
     required String name,
+    required String type,
     required double maxScore,
+    required String date,
   }) async {
-    await _call('createAssessment', {
+    final data = await _call('createAssessment', {
       'courseId': courseId,
       'name': name,
+      'type': type,
       'maxScore': maxScore,
+      'date': date,
     });
+    return data['assessmentId'] as String;
+  }
+
+  Future<void> updateAssessment({
+    required String assessmentId,
+    required String name,
+    required String type,
+    required double maxScore,
+    required String date,
+  }) async {
+    await _call('updateAssessment', {
+      'assessmentId': assessmentId,
+      'name': name,
+      'type': type,
+      'maxScore': maxScore,
+      'date': date,
+    });
+  }
+
+  Future<void> deleteAssessment(String assessmentId) async {
+    await _call('deleteAssessment', {'assessmentId': assessmentId});
+  }
+
+  Future<void> correctPublishedMark({
+    required String assessmentId,
+    required String studentId,
+    required double newScore,
+    required String reason,
+  }) async {
+    await _call('correctPublishedMark', {
+      'assessmentId': assessmentId,
+      'studentId': studentId,
+      'newScore': newScore,
+      'reason': reason,
+    });
+  }
+
+  Future<TeacherStudentRecord> loadStudentRecord({
+    required String courseId,
+    required String studentId,
+  }) async {
+    final courseDoc = await _database.collection('courses').doc(courseId).get();
+    if (!courseDoc.exists || courseDoc.data() == null) {
+      throw const TeacherAcademicServiceException('Course not found.');
+    }
+    final courseData = courseDoc.data()!;
+    final courseCode = courseData['code'] as String? ?? '';
+    final courseName = courseData['name'] as String? ?? '';
+
+    final studentDoc = await _database
+        .collection('courses')
+        .doc(courseId)
+        .collection('students')
+        .doc(studentId)
+        .get();
+
+    if (!studentDoc.exists || studentDoc.data() == null) {
+      throw const TeacherAcademicServiceException(
+        'Student enrollment record not found.',
+      );
+    }
+
+    final student = EnrolledStudent.fromMap(studentDoc.id, studentDoc.data()!);
+
+    final summaryDoc = await _database
+        .collection('attendanceSummaries')
+        .doc('${courseId}_$studentId')
+        .get();
+
+    final attendanceSummary = summaryDoc.exists && summaryDoc.data() != null
+        ? TeacherAttendanceSummary.fromMap(summaryDoc.id, summaryDoc.data()!)
+        : null;
+
+    final recordsSnap = await _database
+        .collection('attendanceRecords')
+        .where('courseId', isEqualTo: courseId)
+        .where('studentId', isEqualTo: studentId)
+        .get();
+
+    final attendanceRecords = recordsSnap.docs
+        .map((d) => TeacherAttendanceRecord.fromMap(d.id, d.data()))
+        .toList();
+
+    attendanceRecords.sort((a, b) {
+      final aDate = a.markedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bDate = b.markedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bDate.compareTo(aDate);
+    });
+
+    final marksSnap = await _database
+        .collection('marks')
+        .where('courseId', isEqualTo: courseId)
+        .where('studentId', isEqualTo: studentId)
+        .get();
+
+    final marks = marksSnap.docs
+        .map((d) => TeacherStudentMark.fromMap(d.id, d.data()))
+        .toList();
+
+    marks.sort((a, b) => a.assessmentName.compareTo(b.assessmentName));
+
+    return TeacherStudentRecord(
+      student: student,
+      courseId: courseId,
+      courseCode: courseCode,
+      courseName: courseName,
+      attendanceSummary: attendanceSummary,
+      attendanceRecords: attendanceRecords,
+      marks: marks,
+    );
   }
 
   Future<List<TeacherMark>> loadAssessmentMarks(
@@ -758,7 +875,9 @@ class TeacherAssessment {
   final String courseCode;
   final String courseName;
   final String name;
+  final String type;
   final double maxScore;
+  final String date;
   final String status;
 
   const TeacherAssessment({
@@ -767,7 +886,9 @@ class TeacherAssessment {
     required this.courseCode,
     required this.courseName,
     required this.name,
+    required this.type,
     required this.maxScore,
+    required this.date,
     required this.status,
   });
 
@@ -778,7 +899,9 @@ class TeacherAssessment {
       courseCode: data['courseCode'] as String? ?? '',
       courseName: data['courseName'] as String? ?? '',
       name: data['name'] as String? ?? '',
+      type: data['type'] as String? ?? 'Quiz',
       maxScore: (data['maxScore'] as num?)?.toDouble() ?? 0,
+      date: data['date'] as String? ?? '',
       status: data['status'] as String? ?? 'draft',
     );
   }
@@ -786,28 +909,165 @@ class TeacherAssessment {
 
 class TeacherMark {
   final String id;
+  final String assessmentId;
   final String studentId;
   final double score;
   final double maxScore;
   final bool published;
+  final double? previousScore;
+  final String? correctionReason;
+  final DateTime? correctedAt;
 
   const TeacherMark({
     required this.id,
+    required this.assessmentId,
     required this.studentId,
     required this.score,
     required this.maxScore,
     required this.published,
+    this.previousScore,
+    this.correctionReason,
+    this.correctedAt,
   });
 
   factory TeacherMark.fromMap(String id, Map<String, dynamic> data) {
     return TeacherMark(
       id: id,
+      assessmentId: data['assessmentId'] as String? ?? '',
       studentId: data['studentId'] as String? ?? '',
       score: (data['score'] as num?)?.toDouble() ?? 0,
       maxScore: (data['maxScore'] as num?)?.toDouble() ?? 0,
       published: data['published'] as bool? ?? false,
+      previousScore: (data['previousScore'] as num?)?.toDouble(),
+      correctionReason: _nullableText(data['correctionReason']),
+      correctedAt: _date(data['correctedAt']),
     );
   }
+}
+
+class TeacherAttendanceSummary {
+  final String id;
+  final String courseId;
+  final String courseCode;
+  final String courseName;
+  final String studentId;
+  final int attended;
+  final int total;
+  final double percentage;
+  final double attendanceMarks;
+
+  const TeacherAttendanceSummary({
+    required this.id,
+    required this.courseId,
+    required this.courseCode,
+    required this.courseName,
+    required this.studentId,
+    required this.attended,
+    required this.total,
+    required this.percentage,
+    required this.attendanceMarks,
+  });
+
+  factory TeacherAttendanceSummary.fromMap(
+    String id,
+    Map<String, dynamic> data,
+  ) {
+    return TeacherAttendanceSummary(
+      id: id,
+      courseId: data['courseId'] as String? ?? '',
+      courseCode: data['courseCode'] as String? ?? '',
+      courseName: data['courseName'] as String? ?? '',
+      studentId: data['studentId'] as String? ?? '',
+      attended: (data['attended'] as num?)?.toInt() ?? 0,
+      total: (data['total'] as num?)?.toInt() ?? 0,
+      percentage: (data['percentage'] as num?)?.toDouble() ?? 0,
+      attendanceMarks: (data['attendanceMarks'] as num?)?.toDouble() ?? 0,
+    );
+  }
+}
+
+class TeacherStudentMark {
+  final String id;
+  final String assessmentId;
+  final String assessmentName;
+  final String assessmentType;
+  final String assessmentDate;
+  final String courseId;
+  final String studentId;
+  final double score;
+  final double maxScore;
+  final bool published;
+  final double? previousScore;
+  final String? correctionReason;
+  final DateTime? correctedAt;
+
+  const TeacherStudentMark({
+    required this.id,
+    required this.assessmentId,
+    required this.assessmentName,
+    required this.assessmentType,
+    required this.assessmentDate,
+    required this.courseId,
+    required this.studentId,
+    required this.score,
+    required this.maxScore,
+    required this.published,
+    this.previousScore,
+    this.correctionReason,
+    this.correctedAt,
+  });
+
+  factory TeacherStudentMark.fromMap(String id, Map<String, dynamic> data) {
+    return TeacherStudentMark(
+      id: id,
+      assessmentId: data['assessmentId'] as String? ?? '',
+      assessmentName: data['assessmentName'] as String? ?? '',
+      assessmentType:
+          data['type'] as String? ??
+          data['assessmentType'] as String? ??
+          'Quiz',
+      assessmentDate:
+          data['date'] as String? ?? data['assessmentDate'] as String? ?? '',
+      courseId: data['courseId'] as String? ?? '',
+      studentId: data['studentId'] as String? ?? '',
+      score: (data['score'] as num?)?.toDouble() ?? 0,
+      maxScore: (data['maxScore'] as num?)?.toDouble() ?? 0,
+      published: data['published'] as bool? ?? false,
+      previousScore: (data['previousScore'] as num?)?.toDouble(),
+      correctionReason: _nullableText(data['correctionReason']),
+      correctedAt: _date(data['correctedAt']),
+    );
+  }
+}
+
+class TeacherStudentRecord {
+  final EnrolledStudent student;
+  final String courseId;
+  final String courseCode;
+  final String courseName;
+  final TeacherAttendanceSummary? attendanceSummary;
+  final List<TeacherAttendanceRecord> attendanceRecords;
+  final List<TeacherStudentMark> marks;
+
+  const TeacherStudentRecord({
+    required this.student,
+    required this.courseId,
+    required this.courseCode,
+    required this.courseName,
+    required this.attendanceSummary,
+    required this.attendanceRecords,
+    required this.marks,
+  });
+
+  double get totalEarnedScore =>
+      marks.where((m) => m.published).fold(0.0, (acc, m) => acc + m.score);
+
+  double get totalPossibleScore =>
+      marks.where((m) => m.published).fold(0.0, (acc, m) => acc + m.maxScore);
+
+  double get percentageScore => totalPossibleScore == 0
+      ? 0.0
+      : (totalEarnedScore / totalPossibleScore) * 100;
 }
 
 String? _nullableText(dynamic value) {

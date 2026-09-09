@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:trackademic/core/services/teacher_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/features/teacher/students/presentation/teacher_student_record_screen.dart';
 
 class TeacherCoursesScreen extends StatefulWidget {
   const TeacherCoursesScreen({super.key});
@@ -504,6 +505,7 @@ class _CourseStudentsDialogState extends State<_CourseStudentsDialog> {
   late Future<List<EnrolledStudent>> _studentsFuture;
 
   bool _enrolling = false;
+  bool _showInactive = false;
   String? _removingStudentId;
 
   @override
@@ -519,7 +521,10 @@ class _CourseStudentsDialogState extends State<_CourseStudentsDialog> {
   }
 
   void _reloadStudents() {
-    _studentsFuture = _service.loadCourseStudents(widget.course.id);
+    _studentsFuture = _service.loadCourseStudents(
+      widget.course.id,
+      includeInactive: _showInactive,
+    );
   }
 
   @override
@@ -528,7 +533,7 @@ class _CourseStudentsDialogState extends State<_CourseStudentsDialog> {
       title: Text('${widget.course.code} students'),
       content: SizedBox(
         width: 650,
-        height: 460,
+        height: 500,
         child: Column(
           children: [
             Row(
@@ -551,7 +556,28 @@ class _CourseStudentsDialogState extends State<_CourseStudentsDialog> {
                 ),
               ],
             ),
-            const SizedBox(height: AppSpacing.large),
+            const SizedBox(height: AppSpacing.small),
+            Row(
+              children: [
+                Checkbox(
+                  value: _showInactive,
+                  onChanged: (val) {
+                    setState(() {
+                      _showInactive = val ?? false;
+                      _reloadStudents();
+                    });
+                  },
+                ),
+                const Text(
+                  'Show past / inactive enrollments',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppSpacing.small),
             Expanded(
               child: FutureBuilder<List<EnrolledStudent>>(
                 future: _studentsFuture,
@@ -587,36 +613,94 @@ class _CourseStudentsDialogState extends State<_CourseStudentsDialog> {
                     separatorBuilder: (_, _) => const Divider(),
                     itemBuilder: (context, index) {
                       final student = students[index];
-
                       final removing = _removingStudentId == student.uid;
+                      final isEnrolled = student.isActive;
 
                       return ListTile(
                         contentPadding: EdgeInsets.zero,
-                        leading: const CircleAvatar(
-                          child: Icon(Icons.person_rounded),
+                        leading: CircleAvatar(
+                          backgroundColor: isEnrolled
+                              ? AppColors.primary.withValues(alpha: 0.1)
+                              : Colors.amber.withValues(alpha: 0.1),
+                          child: Icon(
+                            Icons.person_rounded,
+                            color: isEnrolled
+                                ? AppColors.primary
+                                : Colors.amber[800],
+                          ),
                         ),
-                        title: Text(student.displayName),
+                        title: Row(
+                          children: [
+                            Text(student.displayName),
+                            if (!isEnrolled) ...[
+                              const SizedBox(width: AppSpacing.small),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.amber.withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(
+                                    AppRadius.small,
+                                  ),
+                                ),
+                                child: Text(
+                                  'Inactive',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.amber[900],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
                         subtitle: Text(
                           '${student.institutionId} · ${student.email}',
                         ),
-                        trailing: IconButton(
-                          tooltip: 'Remove student',
-                          onPressed: removing
-                              ? null
-                              : () {
-                                  _confirmRemove(student);
-                                },
-                          icon: removing
-                              ? const SizedBox.square(
-                                  dimension: 20,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: 'View academic record',
+                              icon: const Icon(
+                                Icons.analytics_outlined,
+                                color: AppColors.primary,
+                              ),
+                              onPressed: () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => TeacherStudentRecordScreen(
+                                      course: widget.course,
+                                      student: student,
+                                    ),
                                   ),
-                                )
-                              : const Icon(
-                                  Icons.person_remove_outlined,
-                                  color: AppColors.danger,
-                                ),
+                                );
+                              },
+                            ),
+                            if (isEnrolled)
+                              IconButton(
+                                tooltip: 'Remove student',
+                                onPressed: removing
+                                    ? null
+                                    : () {
+                                        _confirmRemove(student);
+                                      },
+                                icon: removing
+                                    ? const SizedBox.square(
+                                        dimension: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(
+                                        Icons.person_remove_outlined,
+                                        color: AppColors.danger,
+                                      ),
+                              ),
+                          ],
                         ),
                       );
                     },

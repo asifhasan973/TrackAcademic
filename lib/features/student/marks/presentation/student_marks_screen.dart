@@ -276,12 +276,37 @@ class _AssessmentRow extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: AppSpacing.extraSmall),
-              Text(
-                '${percentage.toStringAsFixed(1)}%',
-                style: const TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 12,
-                ),
+              Row(
+                children: [
+                  Text(
+                    '${percentage.toStringAsFixed(1)}%',
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 12,
+                    ),
+                  ),
+                  if (mark.previousScore != null) ...[
+                    const SizedBox(width: AppSpacing.small),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(AppRadius.small),
+                      ),
+                      child: Text(
+                        'Corrected from ${_format(mark.previousScore!)}',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.amber[900],
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ],
           ),

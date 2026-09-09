@@ -100,7 +100,28 @@ type SubmitAttendanceData = {
 type CreateAssessmentData = {
   courseId?: unknown;
   name?: unknown;
+  type?: unknown;
   maxScore?: unknown;
+  date?: unknown;
+};
+
+type UpdateAssessmentData = {
+  assessmentId?: unknown;
+  name?: unknown;
+  type?: unknown;
+  maxScore?: unknown;
+  date?: unknown;
+};
+
+type DeleteAssessmentData = {
+  assessmentId?: unknown;
+};
+
+type CorrectPublishedMarkData = {
+  assessmentId?: unknown;
+  studentId?: unknown;
+  newScore?: unknown;
+  reason?: unknown;
 };
 
 type SaveAssessmentMarksData = {
@@ -305,6 +326,91 @@ function validateDayIndex(value: unknown): number {
 
   return parsed;
 }
+
+function validateStrictCalendarDate(value: unknown, field: string): string {
+  const dateStr = requiredString(value, field, 10, 10);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!match) {
+    throw new HttpsError(
+      "invalid-argument",
+      `${field} must be a valid date formatted as YYYY-MM-DD.`,
+    );
+  }
+
+  const year = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10);
+  const day = parseInt(match[3], 10);
+
+  if (year < 2000 || year > 2100) {
+    throw new HttpsError(
+      "invalid-argument",
+      `${field} year must be between 2000 and 2100.`,
+    );
+  }
+
+  if (month < 1 || month > 12) {
+    throw new HttpsError(
+      "invalid-argument",
+      `${field} month must be between 01 and 12.`,
+    );
+  }
+
+  const isLeapYear =
+    (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+  const daysInMonth = [
+    31,
+    isLeapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+
+  if (day < 1 || day > daysInMonth[month - 1]) {
+    throw new HttpsError(
+      "invalid-argument",
+      `${field} day is invalid for month ${match[2]}.`,
+    );
+  }
+
+  return dateStr;
+}
+
+function timeToMinutes(timeStr: string): number {
+  const parts = timeStr.split(":");
+  return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+}
+
+function deriveDayLabel(dayIndex: number): string {
+  const days = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ];
+  if (dayIndex < 0 || dayIndex >= days.length) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Day index must be between 0 and 6.",
+    );
+  }
+  return days[dayIndex];
+}
+
+const INACTIVE_SCHEDULE_STATUSES = new Set([
+  "cancelled",
+  "archived",
+  "inactive",
+]);
 
 function hashPasscode(passcode: string, salt: string): string {
   return crypto.scryptSync(passcode, salt, 32).toString("hex");
@@ -1393,10 +1499,7 @@ export const createSchedule =
         );
       }
 
-      const teacher =
-        await requireActiveTeacher(
-          teacherId,
-        );
+      const teacher = await requireActiveTeacher(teacherId, request.auth);
 
       const courseId = requiredString(
         request.data.courseId,
@@ -1405,23 +1508,16 @@ export const createSchedule =
         128,
       );
 
-      const course =
-        await requireOwnedCourse(
-          teacherId,
-          courseId,
-        );
-
-      const dayIndex =
-        validateDayIndex(
-          request.data.dayIndex,
-        );
-
-      const day = requiredString(
-        request.data.day,
-        "Day",
-        3,
-        20,
+      const course = await requireOwnedCourse(
+        teacherId,
+        courseId,
       );
+
+      const dayIndex = validateDayIndex(
+        request.data.dayIndex,
+      );
+
+      const day = deriveDayLabel(dayIndex);
 
       const startTime = validateTime(
         request.data.startTime,
@@ -1433,7 +1529,10 @@ export const createSchedule =
         "End time",
       );
 
-      if (endTime <= startTime) {
+      const startMinutes = timeToMinutes(startTime);
+      const endMinutes = timeToMinutes(endTime);
+
+      if (endMinutes <= startMinutes) {
         throw new HttpsError(
           "invalid-argument",
           "End time must be after start time.",
@@ -1454,46 +1553,122 @@ export const createSchedule =
         40,
       );
 
+      const normalizedRoom = room.trim().toLowerCase();
+      const normalizedClassType = classType.trim().toLowerCase();
       const database = getFirestore();
+      const lockRef = database
+        .collection("scheduleLocks")
+        .doc(`${teacherId}_${dayIndex}`);
 
-      const reference = database
-        .collection("schedules")
-        .doc();
+      return await database.runTransaction(async (transaction) => {
+        // Read conflict lock document inside transaction
+        await transaction.get(lockRef);
 
-      const teacherName =
-        typeof teacher.displayName === "string" ?
-          teacher.displayName :
-          "";
+        // Query active schedules taught by this teacher on this dayIndex
+        const teacherSchedulesQuery = database
+          .collection("schedules")
+          .where("teacherId", "==", teacherId)
+          .where("dayIndex", "==", dayIndex);
 
-      const timestamp =
-        FieldValue.serverTimestamp();
+        const existingSnap = await transaction.get(teacherSchedulesQuery);
 
-      await reference.create({
-        courseId,
-        courseCode:
-          typeof course.code === "string" ?
-            course.code :
-            "",
-        courseName:
-          typeof course.name === "string" ?
-            course.name :
-            "",
-        teacherId,
-        teacherName,
-        dayIndex,
-        day,
-        startTime,
-        endTime,
-        room,
-        classType,
-        status: "scheduled",
-        createdAt: timestamp,
-        updatedAt: timestamp,
+        for (const doc of existingSnap.docs) {
+          const data = doc.data();
+          const docStatus = String(data.status ?? "").toLowerCase();
+          if (INACTIVE_SCHEDULE_STATUSES.has(docStatus)) {
+            continue;
+          }
+
+          // Exact duplicate check for the same course
+          if (data.courseId === courseId) {
+            const docRoom =
+              String(data.room ?? "").trim().toLowerCase();
+            const docClassType =
+              String(data.classType ?? "").trim().toLowerCase();
+            if (
+              data.startTime === startTime &&
+              data.endTime === endTime &&
+              docRoom === normalizedRoom &&
+              docClassType === normalizedClassType
+            ) {
+              throw new HttpsError(
+                "invalid-argument",
+                "An exact duplicate schedule entry already exists for " +
+                  "this course.",
+              );
+            }
+          }
+
+          // Overlap check for the teacher across all courses
+          const existingStart = timeToMinutes(String(data.startTime));
+          const existingEnd = timeToMinutes(String(data.endTime));
+          if (startMinutes < existingEnd && existingStart < endMinutes) {
+            const conflicting = data.courseCode ?? "another class";
+            throw new HttpsError(
+              "invalid-argument",
+              `Schedule overlaps with ${conflicting} ` +
+                `(${data.startTime} - ${data.endTime}) on ${day}.`,
+            );
+          }
+        }
+
+        const reference = database.collection("schedules").doc();
+        const teacherName =
+          typeof teacher.displayName === "string" ?
+            teacher.displayName :
+            "";
+        const timestamp = FieldValue.serverTimestamp();
+
+        // Update deterministic schedule lock document
+        transaction.set(
+          lockRef,
+          {
+            teacherId,
+            dayIndex,
+            version: FieldValue.increment(1),
+            updatedAt: timestamp,
+          },
+          {merge: true},
+        );
+
+        transaction.create(reference, {
+          courseId,
+          courseCode: typeof course.code === "string" ? course.code : "",
+          courseName: typeof course.name === "string" ? course.name : "",
+          teacherId,
+          teacherName,
+          dayIndex,
+          day,
+          startTime,
+          endTime,
+          room: room.trim(),
+          classType: classType.trim(),
+          status: "scheduled",
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+
+        const auditRef = database.collection("auditLogs").doc();
+        transaction.create(auditRef, {
+          action: "create_schedule",
+          scheduleId: reference.id,
+          courseId,
+          teacherId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          dayIndex,
+          day,
+          startTime,
+          endTime,
+          room: room.trim(),
+          classType: classType.trim(),
+          createdAt: timestamp,
+        });
+
+        return {
+          scheduleId: reference.id,
+        };
       });
-
-      return {
-        scheduleId: reference.id,
-      };
     },
   );
 
@@ -1512,29 +1687,14 @@ export const updateSchedule =
         );
       }
 
+      await requireActiveTeacher(teacherId, request.auth);
+
       const scheduleId = requiredString(
         request.data.scheduleId,
         "Schedule ID",
         1,
         128,
       );
-
-      const reference = getFirestore()
-        .collection("schedules")
-        .doc(scheduleId);
-
-      const document =
-        await reference.get();
-
-      const existing =
-        document.data();
-
-      if (!document.exists || !existing) {
-        throw new HttpsError(
-          "not-found",
-          "Schedule not found.",
-        );
-      }
 
       const courseId = requiredString(
         request.data.courseId,
@@ -1543,32 +1703,16 @@ export const updateSchedule =
         128,
       );
 
-      const course =
-        await requireOwnedCourse(
-          teacherId,
-          courseId,
-        );
-
-      if (
-        existing.teacherId !== teacherId
-      ) {
-        throw new HttpsError(
-          "permission-denied",
-          "You do not manage this schedule.",
-        );
-      }
-
-      const dayIndex =
-        validateDayIndex(
-          request.data.dayIndex,
-        );
-
-      const day = requiredString(
-        request.data.day,
-        "Day",
-        3,
-        20,
+      const course = await requireOwnedCourse(
+        teacherId,
+        courseId,
       );
+
+      const dayIndex = validateDayIndex(
+        request.data.dayIndex,
+      );
+
+      const day = deriveDayLabel(dayIndex);
 
       const startTime = validateTime(
         request.data.startTime,
@@ -1580,7 +1724,10 @@ export const updateSchedule =
         "End time",
       );
 
-      if (endTime <= startTime) {
+      const startMinutes = timeToMinutes(startTime);
+      const endMinutes = timeToMinutes(endTime);
+
+      if (endMinutes <= startMinutes) {
         throw new HttpsError(
           "invalid-argument",
           "End time must be after start time.",
@@ -1601,29 +1748,154 @@ export const updateSchedule =
         40,
       );
 
-      await reference.update({
-        courseId,
-        courseCode:
-          typeof course.code === "string" ?
-            course.code :
-            "",
-        courseName:
-          typeof course.name === "string" ?
-            course.name :
-            "",
-        dayIndex,
-        day,
-        startTime,
-        endTime,
-        room,
-        classType,
-        updatedAt:
-          FieldValue.serverTimestamp(),
-      });
+      const normalizedRoom = room.trim().toLowerCase();
+      const normalizedClassType = classType.trim().toLowerCase();
+      const database = getFirestore();
+      const reference = database.collection("schedules").doc(scheduleId);
 
-      return {
-        success: true,
-      };
+      return await database.runTransaction(async (transaction) => {
+        const scheduleDoc = await transaction.get(reference);
+        if (!scheduleDoc.exists || !scheduleDoc.data()) {
+          throw new HttpsError(
+            "not-found",
+            "Schedule not found.",
+          );
+        }
+
+        const existing = scheduleDoc.data()!;
+        if (existing.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this schedule.",
+          );
+        }
+
+        const currentDayIndex = Number(existing.dayIndex);
+        const targetDayIndex = dayIndex;
+
+        // Deterministic sorted lock acquisition
+        const lockRefs: FirebaseFirestore.DocumentReference[] = [];
+        if (currentDayIndex === targetDayIndex) {
+          lockRefs.push(
+            database
+              .collection("scheduleLocks")
+              .doc(`${teacherId}_${targetDayIndex}`),
+          );
+        } else {
+          const oldLockId = `${teacherId}_${currentDayIndex}`;
+          const newLockId = `${teacherId}_${targetDayIndex}`;
+          const sortedLockIds = [oldLockId, newLockId].sort();
+          for (const id of sortedLockIds) {
+            lockRefs.push(database.collection("scheduleLocks").doc(id));
+          }
+        }
+
+        // Read all locks in deterministic sorted order
+        for (const lockRef of lockRefs) {
+          await transaction.get(lockRef);
+        }
+
+        const teacherSchedulesQuery = database
+          .collection("schedules")
+          .where("teacherId", "==", teacherId)
+          .where("dayIndex", "==", targetDayIndex);
+
+        const existingSnap = await transaction.get(teacherSchedulesQuery);
+
+        for (const doc of existingSnap.docs) {
+          if (doc.id === scheduleId) {
+            continue; // Exclude current schedule during update!
+          }
+
+          const data = doc.data();
+          const docStatus = String(data.status ?? "").toLowerCase();
+          if (INACTIVE_SCHEDULE_STATUSES.has(docStatus)) {
+            continue;
+          }
+
+          // Exact duplicate check
+          if (data.courseId === courseId) {
+            const docRoom =
+              String(data.room ?? "").trim().toLowerCase();
+            const docClassType =
+              String(data.classType ?? "").trim().toLowerCase();
+            if (
+              data.startTime === startTime &&
+              data.endTime === endTime &&
+              docRoom === normalizedRoom &&
+              docClassType === normalizedClassType
+            ) {
+              throw new HttpsError(
+                "invalid-argument",
+                "An exact duplicate schedule entry already exists for " +
+                  "this course.",
+              );
+            }
+          }
+
+          // Overlap check
+          const existingStart = timeToMinutes(String(data.startTime));
+          const existingEnd = timeToMinutes(String(data.endTime));
+          if (startMinutes < existingEnd && existingStart < endMinutes) {
+            const conflicting = data.courseCode ?? "another class";
+            throw new HttpsError(
+              "invalid-argument",
+              `Schedule overlaps with ${conflicting} ` +
+                `(${data.startTime} - ${data.endTime}) on ${day}.`,
+            );
+          }
+        }
+
+        const timestamp = FieldValue.serverTimestamp();
+
+        // Update all acquired lock documents
+        for (const lockRef of lockRefs) {
+          transaction.set(
+            lockRef,
+            {
+              teacherId,
+              version: FieldValue.increment(1),
+              updatedAt: timestamp,
+            },
+            {merge: true},
+          );
+        }
+
+        transaction.update(reference, {
+          courseId,
+          courseCode: typeof course.code === "string" ? course.code : "",
+          courseName: typeof course.name === "string" ? course.name : "",
+          dayIndex: targetDayIndex,
+          day,
+          startTime,
+          endTime,
+          room: room.trim(),
+          classType: classType.trim(),
+          updatedAt: timestamp,
+        });
+
+        const auditRef = database.collection("auditLogs").doc();
+        transaction.create(auditRef, {
+          action: "update_schedule",
+          scheduleId,
+          courseId,
+          teacherId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          dayIndex: targetDayIndex,
+          day,
+          startTime,
+          endTime,
+          room: room.trim(),
+          classType: classType.trim(),
+          createdAt: timestamp,
+        });
+
+        return {
+          success: true,
+          scheduleId,
+        };
+      });
     },
   );
 
@@ -1642,6 +1914,8 @@ export const deleteSchedule =
         );
       }
 
+      await requireActiveTeacher(teacherId, request.auth);
+
       const scheduleId = requiredString(
         request.data.scheduleId,
         "Schedule ID",
@@ -1649,32 +1923,61 @@ export const deleteSchedule =
         128,
       );
 
-      const reference = getFirestore()
-        .collection("schedules")
-        .doc(scheduleId);
+      const database = getFirestore();
+      const reference = database.collection("schedules").doc(scheduleId);
 
-      const document =
-        await reference.get();
+      return await database.runTransaction(async (transaction) => {
+        const scheduleDoc = await transaction.get(reference);
+        if (!scheduleDoc.exists || !scheduleDoc.data()) {
+          throw new HttpsError(
+            "not-found",
+            "Schedule not found.",
+          );
+        }
 
-      const data = document.data();
+        const data = scheduleDoc.data()!;
+        if (data.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not own this schedule.",
+          );
+        }
 
-      if (!document.exists || !data) {
-        throw new HttpsError(
-          "not-found",
-          "Schedule not found.",
+        const dayIndex = Number(data.dayIndex);
+        const lockRef = database
+          .collection("scheduleLocks")
+          .doc(`${teacherId}_${dayIndex}`);
+        await transaction.get(lockRef);
+
+        const timestamp = FieldValue.serverTimestamp();
+        transaction.set(
+          lockRef,
+          {
+            teacherId,
+            dayIndex,
+            version: FieldValue.increment(1),
+            updatedAt: timestamp,
+          },
+          {merge: true},
         );
-      }
 
-      await requireOwnedCourse(
-        teacherId,
-        String(data.courseId),
-      );
+        transaction.delete(reference);
 
-      await reference.delete();
+        const auditRef = database.collection("auditLogs").doc();
+        transaction.create(auditRef, {
+          action: "delete_schedule",
+          scheduleId,
+          courseId: String(data.courseId),
+          teacherId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          createdAt: timestamp,
+        });
 
-      return {
-        success: true,
-      };
+        return {
+          success: true,
+        };
+      });
     },
   );
 
@@ -2518,6 +2821,8 @@ export const createAssessment =
         );
       }
 
+      await requireActiveTeacher(teacherId, request.auth);
+
       const courseId = requiredString(
         request.data.courseId,
         "Course ID",
@@ -2538,6 +2843,12 @@ export const createAssessment =
         80,
       );
 
+      const type = optionalString(
+        request.data.type,
+        "Assessment type",
+        40,
+      ) ?? "Quiz";
+
       const maxScore =
         requiredNumber(
           request.data.maxScore,
@@ -2546,29 +2857,309 @@ export const createAssessment =
           1000,
         );
 
-      const reference = getFirestore()
+      const date = validateStrictCalendarDate(
+        request.data.date,
+        "Assessment date",
+      );
+
+      const database = getFirestore();
+      const reference = database
         .collection("assessments")
         .doc();
 
-      await reference.create({
+      const auditRef = database
+        .collection("auditLogs")
+        .doc();
+
+      const timestamp = FieldValue.serverTimestamp();
+
+      const batchWrite = database.batch();
+      batchWrite.create(reference, {
         courseId,
         courseCode:
           course.code ?? "",
         courseName:
           course.name ?? "",
         name,
+        type,
         maxScore,
+        date,
         status: "draft",
+        revision: 1,
         teacherId,
-        createdAt:
-          FieldValue.serverTimestamp(),
-        updatedAt:
-          FieldValue.serverTimestamp(),
+        createdAt: timestamp,
+        updatedAt: timestamp,
       });
+
+      batchWrite.create(auditRef, {
+        action: "create_assessment",
+        assessmentId: reference.id,
+        courseId,
+        teacherId,
+        actorId: teacherId,
+        actorRole: "teacher",
+        name,
+        type,
+        maxScore,
+        date,
+        createdAt: timestamp,
+      });
+
+      await batchWrite.commit();
 
       return {
         assessmentId: reference.id,
       };
+    },
+  );
+
+export const updateAssessment =
+  onCall<UpdateAssessmentData>(
+    {
+      timeoutSeconds: 60,
+    },
+    async (request) => {
+      const teacherId =
+        request.auth?.uid;
+
+      if (!teacherId) {
+        throw new HttpsError(
+          "unauthenticated",
+          "Sign in first.",
+        );
+      }
+
+      await requireActiveTeacher(teacherId, request.auth);
+
+      const assessmentId = requiredString(
+        request.data.assessmentId,
+        "Assessment ID",
+        1,
+        128,
+      );
+
+      const name = requiredString(
+        request.data.name,
+        "Assessment name",
+        1,
+        80,
+      );
+
+      const type = optionalString(
+        request.data.type,
+        "Assessment type",
+        40,
+      ) ?? "Quiz";
+
+      const maxScore = requiredNumber(
+        request.data.maxScore,
+        "Maximum score",
+        1,
+        1000,
+      );
+
+      const date = validateStrictCalendarDate(
+        request.data.date,
+        "Assessment date",
+      );
+
+      const database = getFirestore();
+      const assessmentReference = database
+        .collection("assessments")
+        .doc(assessmentId);
+
+      return await database.runTransaction(async (transaction) => {
+        const assessmentDoc = await transaction.get(assessmentReference);
+        if (!assessmentDoc.exists || !assessmentDoc.data()) {
+          throw new HttpsError(
+            "not-found",
+            "Assessment not found.",
+          );
+        }
+
+        const assessment = assessmentDoc.data()!;
+        const courseId = String(assessment.courseId);
+
+        if (assessment.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not own this assessment.",
+          );
+        }
+
+        if (assessment.status !== "draft") {
+          throw new HttpsError(
+            "failed-precondition",
+            "Only draft assessments can be updated.",
+          );
+        }
+
+        const marksQuery = database
+          .collection("marks")
+          .where("assessmentId", "==", assessmentId);
+
+        const marksSnapshot = await transaction.get(marksQuery);
+
+        const SAFE_LIMIT = 400;
+        if (marksSnapshot.docs.length > SAFE_LIMIT) {
+          throw new HttpsError(
+            "resource-exhausted",
+            `Assessment has ${marksSnapshot.docs.length} mark documents, ` +
+              `which exceeds the safe limit of ${SAFE_LIMIT}.`,
+          );
+        }
+
+        for (const markDoc of marksSnapshot.docs) {
+          const markData = markDoc.data();
+          const existingScore = Number(markData.score ?? 0);
+          if (existingScore > maxScore) {
+            throw new HttpsError(
+              "invalid-argument",
+              `Cannot reduce maximum score to ${maxScore}: student ` +
+                `${markData.studentId} has a score of ${existingScore}.`,
+            );
+          }
+        }
+
+        const timestamp = FieldValue.serverTimestamp();
+
+        transaction.update(assessmentReference, {
+          name,
+          type,
+          maxScore,
+          date,
+          revision: FieldValue.increment(1),
+          updatedAt: timestamp,
+        });
+
+        for (const markDoc of marksSnapshot.docs) {
+          transaction.update(markDoc.ref, {
+            assessmentName: name,
+            maxScore,
+            updatedAt: timestamp,
+          });
+        }
+
+        const auditRef = database.collection("auditLogs").doc();
+        transaction.create(auditRef, {
+          action: "update_assessment",
+          assessmentId,
+          courseId,
+          teacherId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          name,
+          type,
+          maxScore,
+          date,
+          affectedMarksCount: marksSnapshot.docs.length,
+          createdAt: timestamp,
+        });
+
+        return {
+          success: true,
+          updatedMarksCount: marksSnapshot.docs.length,
+        };
+      });
+    },
+  );
+
+export const deleteAssessment =
+  onCall<DeleteAssessmentData>(
+    {
+      timeoutSeconds: 60,
+    },
+    async (request) => {
+      const teacherId =
+        request.auth?.uid;
+
+      if (!teacherId) {
+        throw new HttpsError(
+          "unauthenticated",
+          "Sign in first.",
+        );
+      }
+
+      await requireActiveTeacher(teacherId, request.auth);
+
+      const assessmentId = requiredString(
+        request.data.assessmentId,
+        "Assessment ID",
+        1,
+        128,
+      );
+
+      const database = getFirestore();
+      const assessmentReference = database
+        .collection("assessments")
+        .doc(assessmentId);
+
+      return await database.runTransaction(async (transaction) => {
+        const assessmentDoc = await transaction.get(assessmentReference);
+        if (!assessmentDoc.exists || !assessmentDoc.data()) {
+          throw new HttpsError(
+            "not-found",
+            "Assessment not found.",
+          );
+        }
+
+        const assessment = assessmentDoc.data()!;
+        const courseId = String(assessment.courseId);
+
+        if (assessment.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not own this assessment.",
+          );
+        }
+
+        if (assessment.status !== "draft") {
+          throw new HttpsError(
+            "failed-precondition",
+            "Published assessments cannot be deleted.",
+          );
+        }
+
+        const marksQuery = database
+          .collection("marks")
+          .where("assessmentId", "==", assessmentId)
+          .where("courseId", "==", courseId);
+
+        const marksSnapshot = await transaction.get(marksQuery);
+
+        const SAFE_LIMIT = 400;
+        if (marksSnapshot.docs.length > SAFE_LIMIT) {
+          throw new HttpsError(
+            "resource-exhausted",
+            `Assessment has ${marksSnapshot.docs.length} mark documents, ` +
+              `which exceeds the safe limit of ${SAFE_LIMIT}.`,
+          );
+        }
+
+        for (const markDoc of marksSnapshot.docs) {
+          transaction.delete(markDoc.ref);
+        }
+
+        transaction.delete(assessmentReference);
+
+        const auditRef = database.collection("auditLogs").doc();
+        transaction.create(auditRef, {
+          action: "delete_draft_assessment",
+          assessmentId,
+          courseId,
+          teacherId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          assessmentName: assessment.name ?? "",
+          deletedMarksCount: marksSnapshot.docs.length,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+
+        return {
+          success: true,
+          deletedMarksCount: marksSnapshot.docs.length,
+        };
+      });
     },
   );
 
@@ -2588,6 +3179,8 @@ export const saveAssessmentMarks =
         );
       }
 
+      await requireActiveTeacher(teacherId, request.auth);
+
       const assessmentId =
         requiredString(
           request.data.assessmentId,
@@ -2595,47 +3188,6 @@ export const saveAssessmentMarks =
           1,
           128,
         );
-
-      const database = getFirestore();
-
-      const assessmentReference =
-        database
-          .collection("assessments")
-          .doc(assessmentId);
-
-      const assessmentDocument =
-        await assessmentReference.get();
-
-      const assessment =
-        assessmentDocument.data();
-
-      if (
-        !assessmentDocument.exists ||
-        !assessment
-      ) {
-        throw new HttpsError(
-          "not-found",
-          "Assessment not found.",
-        );
-      }
-
-      const courseId =
-        String(assessment.courseId);
-
-      await requireOwnedCourse(
-        teacherId,
-        courseId,
-      );
-
-      if (
-        assessment.status ===
-        "published"
-      ) {
-        throw new HttpsError(
-          "failed-precondition",
-          "Published marks cannot be edited.",
-        );
-      }
 
       if (!Array.isArray(request.data.marks)) {
         throw new HttpsError(
@@ -2647,101 +3199,169 @@ export const saveAssessmentMarks =
       if (request.data.marks.length > 200) {
         throw new HttpsError(
           "invalid-argument",
-          "Too many marks were submitted at once.",
+          "Too many marks were submitted at once (maximum 200).",
         );
       }
 
-      const maxScore =
-        Number(assessment.maxScore);
-
-      const batchWrite =
-        database.batch();
+      // Pre-validate mark payload structures
+      const parsedMarks: Array<{ studentId: string; score: number }> = [];
+      const seenStudentIds = new Set<string>();
 
       for (const item of request.data.marks) {
-        if (
-          typeof item !== "object" ||
-          item === null
-        ) {
+        if (typeof item !== "object" || item === null) {
           throw new HttpsError(
             "invalid-argument",
             "Invalid mark entry.",
           );
         }
 
-        const mark =
-          item as Record<string, unknown>;
+        const mark = item as Record<string, unknown>;
+        const studentId = requiredString(
+          mark.studentId,
+          "Student ID",
+          1,
+          128,
+        );
 
-        const studentId =
-          requiredString(
-            mark.studentId,
-            "Student ID",
-            1,
-            128,
+        if (seenStudentIds.has(studentId)) {
+          throw new HttpsError(
+            "invalid-argument",
+            `Duplicate student ID ${studentId} in submitted marks.`,
           );
+        }
+        seenStudentIds.add(studentId);
 
-        const score =
-          requiredNumber(
-            mark.score,
-            "Score",
-            0,
-            maxScore,
-          );
-
-        const enrollment =
-          await database
-            .collection("courses")
-            .doc(courseId)
-            .collection("students")
-            .doc(studentId)
-            .get();
-
+        const rawScore = Number(mark.score);
         if (
-          !enrollment.exists ||
-          enrollment.data()?.isActive ===
-            false
+          typeof mark.score !== "number" ||
+          isNaN(rawScore) ||
+          rawScore < 0
         ) {
           throw new HttpsError(
-            "failed-precondition",
-            "A submitted student is not enrolled in this course.",
+            "invalid-argument",
+            `Score for student ${studentId} must be a non-negative number.`,
           );
         }
 
-        const markReference =
-          database
-            .collection("marks")
-            .doc(
-              `${assessmentId}_${studentId}`,
-            );
-
-        batchWrite.set(
-          markReference,
-          {
-            assessmentId,
-            assessmentName:
-              assessment.name ?? "",
-            courseId,
-            courseCode:
-              assessment.courseCode ?? "",
-            courseName:
-              assessment.courseName ?? "",
-            studentId,
-            score,
-            maxScore,
-            published: false,
-            updatedAt:
-              FieldValue.serverTimestamp(),
-          },
-          {
-            merge: true,
-          },
-        );
+        parsedMarks.push({
+          studentId,
+          score: rawScore,
+        });
       }
 
-      await batchWrite.commit();
+      const database = getFirestore();
+      const assessmentReference =
+        database
+          .collection("assessments")
+          .doc(assessmentId);
 
-      return {
-        success: true,
-      };
+      return await database.runTransaction(async (transaction) => {
+        // 1. ALL READS FIRST
+        const assessmentDocument = await transaction.get(assessmentReference);
+        if (
+          !assessmentDocument.exists ||
+          !assessmentDocument.data()
+        ) {
+          throw new HttpsError(
+            "not-found",
+            "Assessment not found.",
+          );
+        }
+
+        const assessment = assessmentDocument.data()!;
+        const courseId = String(assessment.courseId);
+
+        if (assessment.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not own this assessment.",
+          );
+        }
+
+        if (assessment.status === "published") {
+          throw new HttpsError(
+            "failed-precondition",
+            "Published marks cannot be edited.",
+          );
+        }
+
+        const maxScore = Number(assessment.maxScore);
+
+        // Read all student enrollment records in parallel inside
+        // the transaction
+        const enrollmentRefs = parsedMarks.map((m) =>
+          database
+            .collection("courses")
+            .doc(courseId)
+            .collection("students")
+            .doc(m.studentId),
+        );
+
+        const enrollmentDocs = await Promise.all(
+          enrollmentRefs.map((ref) => transaction.get(ref)),
+        );
+
+        // 2. VALIDATION OF READS
+        for (let i = 0; i < parsedMarks.length; i++) {
+          const m = parsedMarks[i];
+          const enrollmentDoc = enrollmentDocs[i];
+
+          if (
+            !enrollmentDoc.exists ||
+            enrollmentDoc.data()?.isActive === false
+          ) {
+            throw new HttpsError(
+              "failed-precondition",
+              `Student ${m.studentId} is not enrolled in this course.`,
+            );
+          }
+
+          if (m.score > maxScore) {
+            throw new HttpsError(
+              "invalid-argument",
+              `Score ${m.score} for student ${m.studentId} ` +
+                `exceeds maximum score ${maxScore}.`,
+            );
+          }
+        }
+
+        // 3. ALL WRITES AFTER READS
+        const timestamp = FieldValue.serverTimestamp();
+
+        // Increment assessment revision inside this transaction
+        transaction.update(assessmentReference, {
+          revision: FieldValue.increment(1),
+          updatedAt: timestamp,
+        });
+
+        for (const m of parsedMarks) {
+          const markReference = database
+            .collection("marks")
+            .doc(`${assessmentId}_${m.studentId}`);
+
+          transaction.set(
+            markReference,
+            {
+              assessmentId,
+              assessmentName: assessment.name ?? "",
+              courseId,
+              courseCode: assessment.courseCode ?? "",
+              courseName: assessment.courseName ?? "",
+              studentId: m.studentId,
+              score: m.score,
+              maxScore,
+              published: false,
+              updatedAt: timestamp,
+            },
+            {merge: true},
+          );
+        }
+
+        return {
+          success: true,
+          savedCount: parsedMarks.length,
+        };
+      });
     },
   );
 
@@ -2761,6 +3381,8 @@ export const publishAssessment =
         );
       }
 
+      await requireActiveTeacher(teacherId, request.auth);
+
       const assessmentId =
         requiredString(
           request.data.assessmentId,
@@ -2770,71 +3392,287 @@ export const publishAssessment =
         );
 
       const database = getFirestore();
-
       const reference = database
         .collection("assessments")
         .doc(assessmentId);
 
-      const document =
-        await reference.get();
+      return await database.runTransaction(async (transaction) => {
+        // READS
+        const document = await transaction.get(reference);
+        if (
+          !document.exists ||
+          !document.data()
+        ) {
+          throw new HttpsError(
+            "not-found",
+            "Assessment not found.",
+          );
+        }
 
-      const assessment =
-        document.data();
+        const assessment = document.data()!;
+        if (assessment.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not own this assessment.",
+          );
+        }
 
-      if (
-        !document.exists ||
-        !assessment
-      ) {
-        throw new HttpsError(
-          "not-found",
-          "Assessment not found.",
-        );
-      }
+        if (assessment.status === "published") {
+          throw new HttpsError(
+            "failed-precondition",
+            "Assessment is already published.",
+          );
+        }
 
-      await requireOwnedCourse(
-        teacherId,
-        String(assessment.courseId),
-      );
+        const marksQuery = database
+          .collection("marks")
+          .where("assessmentId", "==", assessmentId);
 
-      const marks = await database
-        .collection("marks")
-        .where(
-          "assessmentId",
-          "==",
-          assessmentId,
-        )
-        .get();
+        const marksSnapshot = await transaction.get(marksQuery);
 
-      const batchWrite =
-        database.batch();
+        const SAFE_LIMIT = 400;
+        if (marksSnapshot.docs.length > SAFE_LIMIT) {
+          throw new HttpsError(
+            "resource-exhausted",
+            `Assessment has ${marksSnapshot.docs.length} marks, ` +
+              `which exceeds the safe limit of ${SAFE_LIMIT}.`,
+          );
+        }
 
-      batchWrite.update(
-        reference,
-        {
-          status: "published",
-          publishedAt:
-            FieldValue.serverTimestamp(),
-          updatedAt:
-            FieldValue.serverTimestamp(),
-        },
-      );
+        // WRITES
+        const timestamp = FieldValue.serverTimestamp();
 
-      for (const mark of marks.docs) {
-        batchWrite.update(
-          mark.ref,
+        transaction.update(
+          reference,
           {
-            published: true,
-            updatedAt:
-              FieldValue.serverTimestamp(),
+            status: "published",
+            revision: FieldValue.increment(1),
+            publishedAt: timestamp,
+            updatedAt: timestamp,
           },
         );
+
+        for (const mark of marksSnapshot.docs) {
+          transaction.update(
+            mark.ref,
+            {
+              published: true,
+              updatedAt: timestamp,
+            },
+          );
+        }
+
+        const auditRef = database.collection("auditLogs").doc();
+        transaction.create(auditRef, {
+          action: "publish_assessment",
+          assessmentId,
+          courseId: String(assessment.courseId),
+          teacherId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          marksCount: marksSnapshot.docs.length,
+          createdAt: timestamp,
+        });
+
+        return {
+          success: true,
+          publishedMarksCount: marksSnapshot.docs.length,
+        };
+      });
+    },
+  );
+
+export const correctPublishedMark =
+  onCall<CorrectPublishedMarkData>(
+    {
+      timeoutSeconds: 30,
+    },
+    async (request) => {
+      const teacherId = request.auth?.uid;
+
+      if (!teacherId) {
+        throw new HttpsError(
+          "unauthenticated",
+          "Sign in first.",
+        );
       }
 
-      await batchWrite.commit();
+      await requireActiveTeacher(teacherId, request.auth);
 
-      return {
-        success: true,
-      };
+      const assessmentId = requiredString(
+        request.data.assessmentId,
+        "Assessment ID",
+        1,
+        128,
+      );
+
+      const studentId = requiredString(
+        request.data.studentId,
+        "Student ID",
+        1,
+        128,
+      );
+
+      const newScore = requiredNumber(
+        request.data.newScore,
+        "New score",
+        0,
+        10000,
+      );
+
+      const reason = requiredString(
+        request.data.reason,
+        "Correction reason",
+        1,
+        500,
+      ).trim();
+
+      if (reason.length === 0) {
+        throw new HttpsError(
+          "invalid-argument",
+          "A non-empty correction reason is required.",
+        );
+      }
+
+      const database = getFirestore();
+      const assessmentReference = database
+        .collection("assessments")
+        .doc(assessmentId);
+      const markReference = database
+        .collection("marks")
+        .doc(`${assessmentId}_${studentId}`);
+
+      return await database.runTransaction(async (transaction) => {
+        // --- ALL READS FIRST ---
+        const assessmentDoc = await transaction.get(assessmentReference);
+        if (!assessmentDoc.exists || !assessmentDoc.data()) {
+          throw new HttpsError(
+            "not-found",
+            "Assessment not found.",
+          );
+        }
+
+        const assessment = assessmentDoc.data()!;
+        const courseId = String(assessment.courseId);
+
+        if (assessment.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not own this assessment.",
+          );
+        }
+
+        if (assessment.status !== "published") {
+          throw new HttpsError(
+            "failed-precondition",
+            "Only published assessments can have marks corrected.",
+          );
+        }
+
+        const maxScore = Number(assessment.maxScore);
+        if (newScore > maxScore) {
+          throw new HttpsError(
+            "invalid-argument",
+            `Score ${newScore} exceeds maximum score of ${maxScore}.`,
+          );
+        }
+
+        const courseReference = database
+          .collection("courses")
+          .doc(courseId);
+        const courseDoc = await transaction.get(courseReference);
+        if (!courseDoc.exists || courseDoc.data()?.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not own this course.",
+          );
+        }
+
+        // Student enrollment record check (historical / inactive is allowed!)
+        const enrollmentReference = database
+          .collection("courses")
+          .doc(courseId)
+          .collection("students")
+          .doc(studentId);
+        const enrollmentDoc = await transaction.get(enrollmentReference);
+        if (!enrollmentDoc.exists) {
+          throw new HttpsError(
+            "not-found",
+            "Student enrollment record does not exist for this course.",
+          );
+        }
+
+        const markDoc = await transaction.get(markReference);
+        if (!markDoc.exists || !markDoc.data()) {
+          throw new HttpsError(
+            "not-found",
+            "Mark record not found for this student.",
+          );
+        }
+
+        const mark = markDoc.data()!;
+
+        // Verify relationships
+        if (
+          mark.assessmentId !== assessmentId ||
+          mark.courseId !== courseId ||
+          mark.studentId !== studentId
+        ) {
+          throw new HttpsError(
+            "invalid-argument",
+            "Mark record does not match the requested assessment, " +
+              "course, or student.",
+          );
+        }
+
+        const currentScore = Number(mark.score);
+
+        // A same-score request must perform NO mark or audit write!
+        if (currentScore === newScore) {
+          return {
+            success: true,
+            changed: false,
+            previousScore: currentScore,
+            newScore: currentScore,
+            message: `Score is already ${newScore}.`,
+          };
+        }
+
+        // --- WRITES AFTER READS ---
+        const timestamp = FieldValue.serverTimestamp();
+
+        transaction.update(markReference, {
+          score: newScore,
+          previousScore: currentScore,
+          correctionReason: reason,
+          correctedBy: teacherId,
+          correctedAt: timestamp,
+          updatedAt: timestamp,
+          published: true, // Retain student visibility!
+        });
+
+        const auditRef = database.collection("auditLogs").doc();
+        transaction.create(auditRef, {
+          action: "correct_published_mark",
+          assessmentId,
+          courseId,
+          studentId,
+          teacherId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          previousScore: currentScore,
+          newScore,
+          reason,
+          createdAt: timestamp,
+        });
+
+        return {
+          success: true,
+          changed: true,
+          previousScore: currentScore,
+          newScore,
+        };
+      });
     },
   );
 
