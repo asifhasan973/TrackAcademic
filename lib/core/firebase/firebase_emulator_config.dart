@@ -10,16 +10,24 @@ abstract final class FirebaseEmulatorConfig {
     defaultValue: false,
   );
 
+  static const String customHost = String.fromEnvironment(
+    'FIREBASE_EMULATOR_HOST',
+    defaultValue: '',
+  );
+
   static bool _connected = false;
 
   static Future<void> connect() async {
-    if (!kDebugMode || !enabled || _connected) {
+    if (!enabled || _connected) {
       return;
     }
 
-    final host = !kIsWeb && defaultTargetPlatform == TargetPlatform.android
+    final defaultHost =
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.android
         ? '10.0.2.2'
         : '127.0.0.1';
+
+    final host = customHost.trim().isNotEmpty ? customHost.trim() : defaultHost;
 
     await FirebaseAuth.instance.useAuthEmulator(host, 9099);
 

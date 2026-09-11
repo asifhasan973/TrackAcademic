@@ -1,3 +1,5 @@
+import java.util.Base64
+
 plugins {
     id("com.android.application")
     // START: FlutterFire Configuration
@@ -25,14 +27,31 @@ android {
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        manifestPlaceholders["usesCleartextTraffic"] = "false"
     }
 
     buildTypes {
+        debug {
+            manifestPlaceholders["usesCleartextTraffic"] = "true"
+        }
         release {
-            // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+
+            val dartDefines = project.findProperty("dart-defines") as? String
+            val isEmulatorFromDefines = dartDefines?.let { raw ->
+                raw.split(",").any { part ->
+                    try {
+                        val decoded = String(Base64.getDecoder().decode(part.trim()), Charsets.UTF_8)
+                        decoded.contains("USE_FIREBASE_EMULATORS=true")
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
+            } ?: false
+            val isDemoEnv = System.getenv("DEMO_BUILD") == "true" || System.getenv("USE_FIREBASE_EMULATORS") == "true"
+
+            manifestPlaceholders["usesCleartextTraffic"] = if (isEmulatorFromDefines || isDemoEnv) "true" else "false"
         }
     }
 }
