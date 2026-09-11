@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trackademic/core/models/in_app_notification.dart';
+import 'package:trackademic/core/services/notification_service.dart';
+import 'package:trackademic/features/notifications/presentation/notifications_screen.dart';
 
 void main() {
   group('InAppNotification Model Unit Tests', () {
@@ -208,6 +210,162 @@ void main() {
         ).timeAgo(clock: clock),
         'Aug 20',
       );
+    });
+  });
+
+  group('MarkAllAsReadResult Tests', () {
+    test('instantiates with accurate count and hasMore indicators', () {
+      const result1 = MarkAllAsReadResult(count: 42, hasMore: false);
+      expect(result1.count, 42);
+      expect(result1.hasMore, isFalse);
+
+      const result2 = MarkAllAsReadResult(count: 100, hasMore: true);
+      expect(result2.count, 100);
+      expect(result2.hasMore, isTrue);
+    });
+
+    test('clamping semantics for batch bounds', () {
+      int clampBatch(int batchSize) => batchSize.clamp(1, 100);
+      expect(clampBatch(-5), 1);
+      expect(clampBatch(0), 1);
+      expect(clampBatch(50), 50);
+      expect(clampBatch(100), 100);
+      expect(clampBatch(250), 100);
+    });
+  });
+
+  group('NotificationNavigationResolver Tests', () {
+    test('resolves teacher targets correctly', () {
+      // Teacher courses
+      for (final type in [
+        'join_request',
+        'course_archived',
+        'course_reactivated',
+      ]) {
+        final (result, notice) = NotificationNavigationResolver.resolve(
+          role: 'teacher',
+          notificationType: type,
+          isArchived: false,
+        );
+        expect(result, NotificationNavigationResult.teacherCourses);
+        expect(notice, isNull);
+      }
+
+      // Teacher attendance (active course)
+      final (attActive, attNotice1) = NotificationNavigationResolver.resolve(
+        role: 'teacher',
+        notificationType: 'attendance_session_created',
+        isArchived: false,
+      );
+      expect(attActive, NotificationNavigationResult.teacherAttendance);
+      expect(attNotice1, isNull);
+
+      // Teacher attendance (archived course)
+      final (attArchived, attNotice2) = NotificationNavigationResolver.resolve(
+        role: 'teacher',
+        notificationType: 'attendance_session_created',
+        isArchived: true,
+      );
+      expect(attArchived, NotificationNavigationResult.archivedNotice);
+      expect(attNotice2, contains('Cannot manage live attendance'));
+
+      // Teacher marks
+      for (final type in ['assessment_publish', 'assessment_published']) {
+        final (result, notice) = NotificationNavigationResolver.resolve(
+          role: 'teacher',
+          notificationType: type,
+          isArchived: false,
+        );
+        expect(result, NotificationNavigationResult.teacherMarks);
+        expect(notice, isNull);
+      }
+
+      // Teacher schedule
+      for (final type in [
+        'schedule_created',
+        'schedule_updated',
+        'schedule_deleted',
+      ]) {
+        final (result, notice) = NotificationNavigationResolver.resolve(
+          role: 'teacher',
+          notificationType: type,
+          isArchived: false,
+        );
+        expect(result, NotificationNavigationResult.teacherSchedule);
+        expect(notice, isNull);
+      }
+    });
+
+    test('resolves student targets correctly', () {
+      // Student dashboard
+      for (final type in [
+        'join_request_approved',
+        'join_request_rejected',
+        'course_archived',
+        'course_reactivated',
+      ]) {
+        final (result, notice) = NotificationNavigationResolver.resolve(
+          role: 'student',
+          notificationType: type,
+          isArchived: false,
+        );
+        expect(result, NotificationNavigationResult.studentDashboard);
+        expect(notice, isNull);
+      }
+
+      // Student attendance (active course)
+      final (attActive, attNotice1) = NotificationNavigationResolver.resolve(
+        role: 'student',
+        notificationType: 'attendance_session_created',
+        isArchived: false,
+      );
+      expect(attActive, NotificationNavigationResult.studentAttendance);
+      expect(attNotice1, isNull);
+
+      // Student attendance (archived course)
+      final (attArchived, attNotice2) = NotificationNavigationResolver.resolve(
+        role: 'student',
+        notificationType: 'attendance_session_created',
+        isArchived: true,
+      );
+      expect(attArchived, NotificationNavigationResult.archivedNotice);
+      expect(attNotice2, contains('Historical attendance is viewable'));
+
+      // Student marks
+      for (final type in ['assessment_publish', 'assessment_published']) {
+        final (result, notice) = NotificationNavigationResolver.resolve(
+          role: 'student',
+          notificationType: type,
+          isArchived: false,
+        );
+        expect(result, NotificationNavigationResult.studentMarks);
+        expect(notice, isNull);
+      }
+
+      // Student schedule
+      for (final type in [
+        'schedule_created',
+        'schedule_updated',
+        'schedule_deleted',
+      ]) {
+        final (result, notice) = NotificationNavigationResolver.resolve(
+          role: 'student',
+          notificationType: type,
+          isArchived: false,
+        );
+        expect(result, NotificationNavigationResult.studentSchedule);
+        expect(notice, isNull);
+      }
+    });
+
+    test('rejects unrecognized roles safely', () {
+      final (result, notice) = NotificationNavigationResolver.resolve(
+        role: 'admin',
+        notificationType: 'join_request',
+        isArchived: false,
+      );
+      expect(result, NotificationNavigationResult.unrecognizedRole);
+      expect(notice, isNull);
     });
   });
 }

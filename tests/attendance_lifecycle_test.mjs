@@ -154,6 +154,12 @@ async function runAttendanceLifecycleTests() {
     createdAt: FieldValue.serverTimestamp(),
   });
 
+  // Clean up any stale summaries from previous runs
+  for (const sUid of [student1Uid, student2Uid, outsiderUid]) {
+    await db.collection('attendanceSummaries').doc(`${course1Id}_${sUid}`).delete().catch(() => {});
+    await db.collection('attendanceSummaries').doc(`${course2Id}_${sUid}`).delete().catch(() => {});
+  }
+
   // Enroll student1 and student2 in course1
   for (const s of [
     { uid: student1Uid, name: 'Student One', instId: 'ID-student-stu1', email: 'stu1@dept.edu' },

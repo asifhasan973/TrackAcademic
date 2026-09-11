@@ -1,6 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:trackademic/core/models/in_app_notification.dart';
 
+class MarkAllAsReadResult {
+  final int count;
+  final bool hasMore;
+
+  const MarkAllAsReadResult({required this.count, required this.hasMore});
+}
+
 class NotificationService {
   const NotificationService();
 
@@ -52,26 +59,60 @@ class NotificationService {
     });
   }
 
-  /// Marks all unread notifications as read in bounded batches (up to 100 per batch).
-  Future<int> markAllAsRead(String userId, {int maxCount = 100}) async {
-    if (userId.isEmpty) return 0;
-    final unreadSnapshot = await _itemsRef(
-      userId,
-    ).where('isRead', isEqualTo: false).limit(maxCount).get();
-
-    if (unreadSnapshot.docs.isEmpty) {
-      return 0;
+  /// Marks unread notifications as read in bounded batches (clamped between 1 and 100).
+  /// Performs a bounded continuation loop up to [maxTotal] (default 500) and returns [MarkAllAsReadResult].
+  Future<MarkAllAsReadResult> markAllAsRead(
+    String userId, {
+    int batchSize = 100,
+    int maxTotal = 500,
+  }) async {
+    if (userId.isEmpty) {
+      return const MarkAllAsReadResult(count: 0, hasMore: false);
     }
 
-    final batch = _database.batch();
-    for (final doc in unreadSnapshot.docs) {
-      batch.update(doc.reference, {
-        'isRead': true,
-        'readAt': FieldValue.serverTimestamp(),
-      });
+    final clampedBatchSize = batchSize.clamp(1, 100);
+    final clampedMaxTotal = maxTotal < clampedBatchSize
+        ? clampedBatchSize
+        : maxTotal;
+
+    int totalMarked = 0;
+    bool hasMore = false;
+
+    while (totalMarked < clampedMaxTotal) {
+      final toFetch = (clampedMaxTotal - totalMarked).clamp(
+        1,
+        clampedBatchSize,
+      );
+      final unreadSnapshot = await _itemsRef(
+        userId,
+      ).where('isRead', isEqualTo: false).limit(toFetch + 1).get();
+
+      if (unreadSnapshot.docs.isEmpty) {
+        break;
+      }
+
+      final docsToUpdate = unreadSnapshot.docs.take(toFetch).toList();
+      final batch = _database.batch();
+      for (final doc in docsToUpdate) {
+        batch.update(doc.reference, {
+          'isRead': true,
+          'readAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+      totalMarked += docsToUpdate.length;
+
+      if (unreadSnapshot.docs.length > toFetch) {
+        hasMore = true;
+        break;
+      }
+
+      if (docsToUpdate.length < toFetch) {
+        break;
+      }
     }
 
-    await batch.commit();
-    return unreadSnapshot.docs.length;
+    return MarkAllAsReadResult(count: totalMarked, hasMore: hasMore);
   }
 }

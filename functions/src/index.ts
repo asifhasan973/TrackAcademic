@@ -652,8 +652,45 @@ interface NotificationPayload {
   entityId: string;
 }
 
-function queueNotification(
+interface NotificationItemToWrite {
+  ref: FirebaseFirestore.DocumentReference;
+  id: string;
+  payload: NotificationPayload;
+  existingData?: FirebaseFirestore.DocumentData;
+}
+
+async function prepareNotifications(
   database: FirebaseFirestore.Firestore,
+  getter: GetterLike | null,
+  notifications: Array<{id: string; payload: NotificationPayload}>,
+): Promise<NotificationItemToWrite[]> {
+  const items: NotificationItemToWrite[] = [];
+  const refs = notifications.map((n) => {
+    const ref = database
+      .collection("notifications")
+      .doc(n.payload.userId)
+      .collection("items")
+      .doc(n.id);
+    return {ref, id: n.id, payload: n.payload};
+  });
+
+  if (!getter) {
+    return refs;
+  }
+
+  const snaps = await Promise.all(refs.map((r) => getter.get(r.ref)));
+  for (let i = 0; i < refs.length; i++) {
+    items.push({
+      ref: refs[i].ref,
+      id: refs[i].id,
+      payload: refs[i].payload,
+      existingData: snaps[i].exists ? snaps[i].data() : undefined,
+    });
+  }
+  return items;
+}
+
+function commitNotifications(
   writer: {
     set: (
       ref: FirebaseFirestore.DocumentReference,
@@ -661,32 +698,47 @@ function queueNotification(
       options?: {merge?: boolean},
     ) => unknown;
   },
-  id: string,
-  payload: NotificationPayload,
+  items: NotificationItemToWrite[],
   timestamp: FirebaseFirestore.FieldValue,
 ) {
-  const ref = database
-    .collection("notifications")
-    .doc(payload.userId)
-    .collection("items")
-    .doc(id);
-
-  writer.set(
-    ref,
-    {
-      id,
-      userId: payload.userId,
-      type: payload.type,
-      title: payload.title,
-      message: payload.message,
-      courseId: payload.courseId,
-      entityId: payload.entityId,
-      isRead: false,
-      createdAt: timestamp,
-      readAt: null,
-    },
-    {merge: true},
-  );
+  for (const item of items) {
+    if (item.existingData) {
+      // Preserve existing createdAt, isRead, and readAt on duplicate events
+      writer.set(
+        item.ref,
+        {
+          id: item.id,
+          userId: item.payload.userId,
+          type: item.payload.type,
+          title: item.payload.title,
+          message: item.payload.message,
+          courseId: item.payload.courseId,
+          entityId: item.payload.entityId,
+          isRead: item.existingData.isRead ?? false,
+          readAt: item.existingData.readAt ?? null,
+          createdAt: item.existingData.createdAt ?? timestamp,
+        },
+        {merge: true},
+      );
+    } else {
+      writer.set(
+        item.ref,
+        {
+          id: item.id,
+          userId: item.payload.userId,
+          type: item.payload.type,
+          title: item.payload.title,
+          message: item.payload.message,
+          courseId: item.payload.courseId,
+          entityId: item.payload.entityId,
+          isRead: false,
+          createdAt: timestamp,
+          readAt: null,
+        },
+        {merge: true},
+      );
+    }
+  }
 }
 
 function degreesToRadians(value: number): number {
@@ -964,39 +1016,53 @@ export const getCourseJoinCode =
         128,
       );
 
-      const course = await requireActiveOwnedCourse(
-        userId,
-        courseId,
-        request.auth,
-      );
+      const database = getFirestore();
+      const courseRef = database.collection("courses").doc(courseId);
 
-      const existing =
-        typeof course.joinCode === "string" ?
-          course.joinCode.trim().toUpperCase() :
-          "";
+      return await database.runTransaction(async (transaction) => {
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
+        const course = courseDoc.data()!;
+        if (course.teacherId !== userId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
+        if (course.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
 
-      if (existing) {
-        return {
-          joinCode: existing,
-        };
-      }
+        const existing =
+          typeof course.joinCode === "string" ?
+            course.joinCode.trim().toUpperCase() :
+            "";
 
-      const joinCode =
-        courseId
-          .substring(0, Math.min(8, courseId.length))
-          .toUpperCase();
+        if (existing) {
+          return {
+            joinCode: existing,
+          };
+        }
 
-      await getFirestore()
-        .collection("courses")
-        .doc(courseId)
-        .update({
+        const joinCode =
+          courseId
+            .substring(0, Math.min(8, courseId.length))
+            .toUpperCase();
+
+        transaction.update(courseRef, {
           joinCode,
           updatedAt: FieldValue.serverTimestamp(),
         });
 
-      return {
-        joinCode,
-      };
+        return {
+          joinCode,
+        };
+      });
     },
   );
 
@@ -1016,12 +1082,14 @@ export const requestJoinCourse =
       }
 
       const student =
-        await requireActiveUser(studentId);
+        await requireActiveStudent(
+          studentId,
+        );
 
       const joinCode = requiredString(
         request.data.joinCode,
         "Join code",
-        3,
+        4,
         32,
       ).toUpperCase();
 
@@ -1045,103 +1113,110 @@ export const requestJoinCourse =
       }
 
       const courseDocument = courses.docs[0];
-      const course = courseDocument.data();
       const courseId = courseDocument.id;
-
-      if (course.isActive !== true) {
-        throw new HttpsError(
-          "failed-precondition",
-          "This course is inactive.",
-        );
-      }
-
-      if (course.teacherId === studentId) {
-        throw new HttpsError(
-          "failed-precondition",
-          "You already own this course.",
-        );
-      }
-
-      const enrollment = await database
-        .collection("courses")
-        .doc(courseId)
-        .collection("students")
-        .doc(studentId)
-        .get();
-
-      if (
-        enrollment.exists &&
-        enrollment.data()?.isActive !== false
-      ) {
-        throw new HttpsError(
-          "already-exists",
-          "You are already enrolled in this course.",
-        );
-      }
-
+      const courseRef = database.collection("courses").doc(courseId);
+      const enrollmentRef = courseRef.collection("students").doc(studentId);
       const requestReference = database
         .collection("courseJoinRequests")
         .doc(`${courseId}_${studentId}`);
 
-      const previous =
-        await requestReference.get();
+      return await database.runTransaction(async (transaction) => {
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists) {
+          throw new HttpsError(
+            "not-found",
+            "No course was found for this join code.",
+          );
+        }
+        const course = courseDoc.data()!;
 
-      if (
-        previous.exists &&
-        previous.data()?.status === "pending"
-      ) {
-        throw new HttpsError(
-          "already-exists",
-          "Your join request is already pending.",
+        if (course.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is inactive.",
+          );
+        }
+
+        if (course.teacherId === studentId) {
+          throw new HttpsError(
+            "failed-precondition",
+            "You already own this course.",
+          );
+        }
+
+        const enrollment = await transaction.get(enrollmentRef);
+
+        if (
+          enrollment.exists &&
+          enrollment.data()?.isActive !== false
+        ) {
+          throw new HttpsError(
+            "already-exists",
+            "You are already enrolled in this course.",
+          );
+        }
+
+        const previous = await transaction.get(requestReference);
+
+        if (
+          previous.exists &&
+          previous.data()?.status === "pending"
+        ) {
+          throw new HttpsError(
+            "already-exists",
+            "Your join request is already pending.",
+          );
+        }
+
+        const attempt =
+          (previous.data()?.attempt ?? previous.data()?.revision ?? 0) + 1;
+        const timestamp = FieldValue.serverTimestamp();
+
+        const requester = student.displayName || "A student";
+        const courseLabel = course.name || course.code;
+        const notifId = `join_request_${courseId}_${studentId}_${attempt}`;
+
+        const notifItems = await prepareNotifications(
+          database,
+          transaction,
+          [
+            {
+              id: notifId,
+              payload: {
+                userId: course.teacherId,
+                type: "join_request",
+                title: "New Join Request",
+                message: `${requester} requested to join ${courseLabel}.`,
+                courseId,
+                entityId: requestReference.id,
+              },
+            },
+          ],
         );
-      }
 
-      const attempt =
-        (previous.data()?.attempt ?? previous.data()?.revision ?? 0) + 1;
-      const timestamp = FieldValue.serverTimestamp();
-
-      const batch = database.batch();
-
-      batch.set(requestReference, {
-        courseId,
-        courseCode: course.code ?? "",
-        courseName: course.name ?? "",
-        teacherId: course.teacherId ?? "",
-        studentId,
-        studentName: student.displayName ?? "",
-        institutionId: student.institutionId ?? "",
-        email: student.email ?? "",
-        status: "pending",
-        attempt,
-        revision: attempt,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
-
-      const requester = student.displayName || "A student";
-      const courseLabel = course.name || course.code;
-      const notifId = `join_request_${courseId}_${studentId}_${attempt}`;
-      queueNotification(
-        database,
-        batch,
-        notifId,
-        {
-          userId: course.teacherId,
-          type: "join_request",
-          title: "New Join Request",
-          message: `${requester} requested to join ${courseLabel}.`,
+        transaction.set(requestReference, {
           courseId,
-          entityId: requestReference.id,
-        },
-        timestamp,
-      );
+          courseCode: course.code ?? "",
+          courseName: course.name ?? "",
+          teacherId: course.teacherId ?? "",
+          studentId,
+          studentName: student.displayName ?? "",
+          institutionId: student.institutionId ?? "",
+          email: student.email ?? "",
+          status: "pending",
+          attempt,
+          revision: attempt,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
 
-      await batch.commit();
+        commitNotifications(transaction, notifItems, timestamp);
 
-      return {
-        requestId: requestReference.id,
-        courseId,
-      };
+        return {
+          requestId: requestReference.id,
+          courseId,
+        };
+      });
     },
   );
 
@@ -1187,65 +1262,64 @@ export const respondCourseJoinRequest =
       }
 
       const database = getFirestore();
-
       const requestReference = database
         .collection("courseJoinRequests")
         .doc(requestId);
 
-      const joinRequest =
-        await requestReference.get();
+      return await database.runTransaction(async (transaction) => {
+        const joinRequest = await transaction.get(requestReference);
+        const data = joinRequest.data();
 
-      const data = joinRequest.data();
+        if (!joinRequest.exists || !data) {
+          throw new HttpsError(
+            "not-found",
+            "Join request not found.",
+          );
+        }
 
-      if (!joinRequest.exists || !data) {
-        throw new HttpsError(
-          "not-found",
-          "Join request not found.",
-        );
-      }
+        if (data.status !== "pending") {
+          throw new HttpsError(
+            "failed-precondition",
+            "This join request has already been handled.",
+          );
+        }
 
-      if (data.status !== "pending") {
-        throw new HttpsError(
-          "failed-precondition",
-          "This join request has already been handled.",
-        );
-      }
+        const courseId = String(data.courseId);
+        const studentId = String(data.studentId);
+        const courseRef = database.collection("courses").doc(courseId);
+        const courseDoc = await transaction.get(courseRef);
 
-      const courseId = String(data.courseId);
-      const studentId = String(data.studentId);
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
 
-      let course: FirebaseFirestore.DocumentData;
-      if (response === "approved") {
-        course = await requireActiveOwnedCourse(
-          teacherId,
-          courseId,
-          request.auth,
-        );
-      } else {
-        course = await requireOwnedCourse(
-          teacherId,
-          courseId,
-          request.auth,
-        );
-      }
+        const course = courseDoc.data()!;
+        if (course.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
 
-      const batch = database.batch();
+        if (response === "approved") {
+          if (course.isActive !== true) {
+            throw new HttpsError(
+              "failed-precondition",
+              "This course is archived.",
+            );
+          }
+        }
 
-      if (response === "approved") {
         const studentReference = database
           .collection("users")
           .doc(studentId);
 
-        const studentDocument =
-          await studentReference.get();
-
-        const student =
-          studentDocument.data();
+        const studentDocument = await transaction.get(studentReference);
+        const student = studentDocument.data();
 
         if (
-          !studentDocument.exists ||
-          !student ||
-          student.isActive !== true
+          response === "approved" &&
+          (!studentDocument.exists || !student || student.isActive !== true)
         ) {
           throw new HttpsError(
             "failed-precondition",
@@ -1259,81 +1333,87 @@ export const respondCourseJoinRequest =
           .collection("students")
           .doc(studentId);
 
-        batch.set(
-          enrollmentReference,
+        if (response === "approved") {
+          await transaction.get(enrollmentReference);
+        }
+
+        const attempt = data.attempt ?? data.revision ?? 1;
+        const notifId = `join_decision_${requestId}_${attempt}`;
+
+        const notifItems = await prepareNotifications(
+          database,
+          transaction,
+          [
+            {
+              id: notifId,
+              payload: {
+                userId: studentId,
+                type: response === "approved" ?
+                  "join_request_approved" :
+                  "join_request_rejected",
+                title: response === "approved" ?
+                  "Join Request Approved" :
+                  "Join Request Rejected",
+                message:
+                  response === "approved" ?
+                    "Your request to join " +
+                    `${course.name || course.code} was approved.` :
+                    "Your request to join " +
+                    `${course.name || course.code} was rejected.`,
+                courseId,
+                entityId: requestId,
+              },
+            },
+          ],
+        );
+
+        const timestamp = FieldValue.serverTimestamp();
+
+        if (response === "approved") {
+          transaction.set(
+            enrollmentReference,
+            {
+              studentId,
+              institutionId: student!.institutionId ?? "",
+              displayName: student!.displayName ?? "",
+              email: student!.email ?? "",
+              isActive: true,
+              enrolledAt: timestamp,
+              updatedAt: timestamp,
+            },
+            {
+              merge: true,
+            },
+          );
+
+          transaction.set(
+            studentReference,
+            {
+              courseIds: FieldValue.arrayUnion(courseId),
+              updatedAt: timestamp,
+            },
+            {
+              merge: true,
+            },
+          );
+        }
+
+        transaction.update(
+          requestReference,
           {
-            studentId,
-            institutionId:
-              student.institutionId ?? "",
-            displayName:
-              student.displayName ?? "",
-            email:
-              student.email ?? "",
-            isActive: true,
-            enrolledAt:
-              FieldValue.serverTimestamp(),
-            updatedAt:
-              FieldValue.serverTimestamp(),
-          },
-          {
-            merge: true,
+            status: response,
+            respondedBy: teacherId,
+            respondedAt: timestamp,
+            updatedAt: timestamp,
           },
         );
 
-        batch.set(
-          studentReference,
-          {
-            courseIds:
-              FieldValue.arrayUnion(courseId),
-            updatedAt:
-              FieldValue.serverTimestamp(),
-          },
-          {
-            merge: true,
-          },
-        );
-      }
+        commitNotifications(transaction, notifItems, timestamp);
 
-      const timestamp = FieldValue.serverTimestamp();
-
-      batch.update(
-        requestReference,
-        {
-          status: response,
-          respondedBy: teacherId,
-          respondedAt: timestamp,
-          updatedAt: timestamp,
-        },
-      );
-
-      const attempt = data.attempt ?? data.revision ?? 1;
-      const notifId = `join_decision_${requestId}_${attempt}`;
-      queueNotification(
-        database,
-        batch,
-        notifId,
-        {
-          userId: studentId,
-          type: response === "approved" ?
-            "join_request_approved" :
-            "join_request_rejected",
-          title: response === "approved" ?
-            "Join Request Approved" :
-            "Join Request Rejected",
-          message: response === "approved" ?
-            `Your request to join ${course.name || course.code} was approved.` :
-            `Your request to join ${course.name || course.code} was rejected.`,
-          courseId,
-          entityId: requestId,
-        },
-        timestamp,
-      );
-
-      await batch.commit();
-
-      return {
-        success: true,
-      };
+        return {
+          success: true,
+        };
+      });
     },
   );
 
@@ -1360,12 +1440,6 @@ export const updateCourse =
         "Course ID",
         1,
         128,
-      );
-
-      const course = await requireActiveOwnedCourse(
-        teacherId,
-        courseId,
-        request.auth,
       );
 
       const name = requiredString(
@@ -1407,53 +1481,71 @@ export const updateCourse =
 
       const database = getFirestore();
       const courseRef = database.collection("courses").doc(courseId);
-      const auditRef = database.collection("auditLogs").doc();
-      const timestamp = FieldValue.serverTimestamp();
 
-      const batchWrite = database.batch();
-      batchWrite.update(courseRef, {
-        name,
-        department,
-        batch,
-        section,
-        semester,
-        room,
-        revision: FieldValue.increment(1),
-        updatedAt: timestamp,
-      });
+      return await database.runTransaction(async (transaction) => {
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
+        const course = courseDoc.data()!;
+        if (course.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
+        if (course.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
 
-      batchWrite.create(auditRef, {
-        action: "course.updated",
-        courseId,
-        teacherId,
-        actorId: teacherId,
-        actorRole: "teacher",
-        previous: {
-          name: course.name,
-          department: course.department,
-          batch: course.batch,
-          section: course.section,
-          semester: course.semester,
-          room: course.room,
-        },
-        updated: {
+        const auditRef = database.collection("auditLogs").doc();
+        const timestamp = FieldValue.serverTimestamp();
+
+        transaction.update(courseRef, {
           name,
           department,
           batch,
           section,
           semester,
           room,
-        },
-        createdAt: timestamp,
+          revision: FieldValue.increment(1),
+          updatedAt: timestamp,
+        });
+
+        transaction.create(auditRef, {
+          action: "course.updated",
+          courseId,
+          teacherId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          previous: {
+            name: course.name,
+            department: course.department,
+            batch: course.batch,
+            section: course.section,
+            semester: course.semester,
+            room: course.room,
+          },
+          updated: {
+            name,
+            department,
+            batch,
+            section,
+            semester,
+            room,
+          },
+          createdAt: timestamp,
+        });
+
+        return {
+          success: true,
+          updated: true,
+          courseId,
+        };
       });
-
-      await batchWrite.commit();
-
-      return {
-        success: true,
-        updated: true,
-        courseId,
-      };
     },
   );
 
@@ -1482,73 +1574,62 @@ export const archiveCourse =
         128,
       );
 
-      const course = await requireActiveOwnedCourse(
-        teacherId,
-        courseId,
-        request.auth,
-      );
-
       const database = getFirestore();
-
-      // Check for active attendance sessions
-      const activeSessions = await database
-        .collection("attendanceSessions")
-        .where("courseId", "==", courseId)
-        .where("status", "==", "active")
-        .limit(1)
-        .get();
-
-      if (!activeSessions.empty) {
-        throw new HttpsError(
-          "failed-precondition",
-          "Cannot archive course with an active attendance session. " +
-            "Please close all active sessions first.",
-        );
-      }
-
-      // Read enrollment recipients before any transaction writes
-      const recipientIds = await getCourseNotificationRecipients(
-        database,
-        null,
-        courseId,
-      );
-
-      const currentRevision =
-        (course.lifecycleRevision ?? course.revision ?? 0) + 1;
-      const timestamp = FieldValue.serverTimestamp();
-
-      const batchWrite = database.batch();
       const courseRef = database.collection("courses").doc(courseId);
 
-      batchWrite.update(courseRef, {
-        isActive: false,
-        lifecycleRevision: currentRevision,
-        revision: currentRevision,
-        archivedAt: timestamp,
-        archivedBy: teacherId,
-        updatedAt: timestamp,
-      });
+      return await database.runTransaction(async (transaction) => {
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
+        const course = courseDoc.data()!;
+        if (course.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
+        if (course.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is already archived.",
+          );
+        }
 
-      const auditRef = database.collection("auditLogs").doc();
-      batchWrite.create(auditRef, {
-        action: "course.archived",
-        courseId,
-        teacherId,
-        actorId: teacherId,
-        actorRole: "teacher",
-        revision: currentRevision,
-        createdAt: timestamp,
-      });
+        // Check for active attendance sessions
+        const activeSessionsQuery = database
+          .collection("attendanceSessions")
+          .where("courseId", "==", courseId)
+          .where("status", "==", "active")
+          .limit(1);
 
-      const courseLabel = course.name || course.code;
-      for (const studentId of recipientIds) {
-        const notifId =
-          `course_archive_${courseId}_${currentRevision}_${studentId}`;
-        queueNotification(
+        const activeSessions = await transaction.get(activeSessionsQuery);
+
+        if (!activeSessions.empty || course.activeSessionId) {
+          throw new HttpsError(
+            "failed-precondition",
+            "Cannot archive course with an active attendance session. " +
+              "Please close all active sessions first.",
+          );
+        }
+
+        // Read enrollment recipients inside transaction
+        const recipientIds = await getCourseNotificationRecipients(
           database,
-          batchWrite,
-          notifId,
-          {
+          transaction,
+          courseId,
+        );
+
+        // Keep lifecycleRevision strictly separate from ordinary revision
+        const currentLifecycleRevision =
+          (course.lifecycleRevision ?? 0) + 1;
+        const timestamp = FieldValue.serverTimestamp();
+
+        const courseLabel = course.name || course.code;
+        const notificationRequests = recipientIds.map((studentId) => ({
+          id: `course_archive_${courseId}_` +
+            `${currentLifecycleRevision}_${studentId}`,
+          payload: {
             userId: studentId,
             type: "course_archived",
             title: "Course Archived",
@@ -1557,18 +1638,43 @@ export const archiveCourse =
             courseId,
             entityId: courseId,
           },
-          timestamp,
+        }));
+
+        const notifItems = await prepareNotifications(
+          database,
+          transaction,
+          notificationRequests,
         );
-      }
 
-      await batchWrite.commit();
+        // ALL READS ARE COMPLETE. COMMENCE WRITES:
+        transaction.update(courseRef, {
+          isActive: false,
+          lifecycleRevision: currentLifecycleRevision,
+          archivedAt: timestamp,
+          archivedBy: teacherId,
+          updatedAt: timestamp,
+        });
 
-      return {
-        success: true,
-        archived: true,
-        courseId,
-        revision: currentRevision,
-      };
+        const auditRef = database.collection("auditLogs").doc();
+        transaction.create(auditRef, {
+          action: "course.archived",
+          courseId,
+          teacherId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          lifecycleRevision: currentLifecycleRevision,
+          createdAt: timestamp,
+        });
+
+        commitNotifications(transaction, notifItems, timestamp);
+
+        return {
+          success: true,
+          archived: true,
+          courseId,
+          lifecycleRevision: currentLifecycleRevision,
+        };
+      });
     },
   );
 
@@ -1597,64 +1703,44 @@ export const reactivateCourse =
         128,
       );
 
-      const course = await requireOwnedCourse(
-        teacherId,
-        courseId,
-        request.auth,
-      );
-
-      if (course.isActive === true) {
-        throw new HttpsError(
-          "failed-precondition",
-          "This course is already active.",
-        );
-      }
-
       const database = getFirestore();
-
-      // Read enrollment recipients before any transaction writes
-      const recipientIds = await getCourseNotificationRecipients(
-        database,
-        null,
-        courseId,
-      );
-
-      const currentRevision =
-        (course.lifecycleRevision ?? course.revision ?? 0) + 1;
-      const timestamp = FieldValue.serverTimestamp();
-
-      const batchWrite = database.batch();
       const courseRef = database.collection("courses").doc(courseId);
 
-      batchWrite.update(courseRef, {
-        isActive: true,
-        lifecycleRevision: currentRevision,
-        revision: currentRevision,
-        reactivatedAt: timestamp,
-        reactivatedBy: teacherId,
-        updatedAt: timestamp,
-      });
+      return await database.runTransaction(async (transaction) => {
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
+        const course = courseDoc.data()!;
+        if (course.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
+        if (course.isActive === true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is already active.",
+          );
+        }
 
-      const auditRef = database.collection("auditLogs").doc();
-      batchWrite.create(auditRef, {
-        action: "course.reactivated",
-        courseId,
-        teacherId,
-        actorId: teacherId,
-        actorRole: "teacher",
-        revision: currentRevision,
-        createdAt: timestamp,
-      });
-
-      const courseLabel = course.name || course.code;
-      for (const studentId of recipientIds) {
-        const notifId =
-          `course_reactivate_${courseId}_${currentRevision}_${studentId}`;
-        queueNotification(
+        // Read enrollment recipients inside transaction
+        const recipientIds = await getCourseNotificationRecipients(
           database,
-          batchWrite,
-          notifId,
-          {
+          transaction,
+          courseId,
+        );
+
+        const currentLifecycleRevision =
+          (course.lifecycleRevision ?? 0) + 1;
+        const timestamp = FieldValue.serverTimestamp();
+
+        const courseLabel = course.name || course.code;
+        const notificationRequests = recipientIds.map((studentId) => ({
+          id: `course_reactivate_${courseId}_` +
+            `${currentLifecycleRevision}_${studentId}`,
+          payload: {
             userId: studentId,
             type: "course_reactivated",
             title: "Course Reactivated",
@@ -1662,18 +1748,43 @@ export const reactivateCourse =
             courseId,
             entityId: courseId,
           },
-          timestamp,
+        }));
+
+        const notifItems = await prepareNotifications(
+          database,
+          transaction,
+          notificationRequests,
         );
-      }
 
-      await batchWrite.commit();
+        // ALL READS ARE COMPLETE. COMMENCE WRITES:
+        transaction.update(courseRef, {
+          isActive: true,
+          lifecycleRevision: currentLifecycleRevision,
+          reactivatedAt: timestamp,
+          reactivatedBy: teacherId,
+          updatedAt: timestamp,
+        });
 
-      return {
-        success: true,
-        reactivated: true,
-        courseId,
-        revision: currentRevision,
-      };
+        const auditRef = database.collection("auditLogs").doc();
+        transaction.create(auditRef, {
+          action: "course.reactivated",
+          courseId,
+          teacherId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          lifecycleRevision: currentLifecycleRevision,
+          createdAt: timestamp,
+        });
+
+        commitNotifications(transaction, notifItems, timestamp);
+
+        return {
+          success: true,
+          reactivated: true,
+          courseId,
+          lifecycleRevision: currentLifecycleRevision,
+        };
+      });
     },
   );
 
@@ -1825,6 +1936,7 @@ export const enrollStudent =
 
       await requireActiveTeacher(
         teacherId,
+        request.auth,
       );
 
       const courseId = requiredString(
@@ -1838,12 +1950,6 @@ export const enrollStudent =
         validateInstitutionId(
           request.data.institutionId,
         );
-
-      await requireActiveOwnedCourse(
-        teacherId,
-        courseId,
-        request.auth,
-      );
 
       const database = getFirestore();
 
@@ -1877,62 +1983,80 @@ export const enrollStudent =
         );
       }
 
-      const enrollmentReference =
-        database
-          .collection("courses")
-          .doc(courseId)
-          .collection("students")
-          .doc(studentDocument.id);
+      const courseRef = database.collection("courses").doc(courseId);
+      const studentRef = studentDocument.ref;
+      const enrollmentReference = courseRef
+        .collection("students")
+        .doc(studentDocument.id);
 
-      const timestamp =
-        FieldValue.serverTimestamp();
+      return await database.runTransaction(async (transaction) => {
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
+        const course = courseDoc.data()!;
+        if (course.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
+        if (course.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
 
-      const batchWrite =
-        database.batch();
+        const studentDoc = await transaction.get(studentRef);
+        if (!studentDoc.exists || studentDoc.data()?.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This student account is inactive.",
+          );
+        }
 
-      batchWrite.set(
-        enrollmentReference,
-        {
+        await transaction.get(enrollmentReference);
+
+        const timestamp = FieldValue.serverTimestamp();
+
+        transaction.set(
+          enrollmentReference,
+          {
+            studentId: studentDocument.id,
+            institutionId,
+            displayName:
+              typeof student.displayName === "string" ?
+                student.displayName :
+                "",
+            email:
+              typeof student.email === "string" ?
+                student.email :
+                "",
+            isActive: true,
+            enrolledAt: timestamp,
+            updatedAt: timestamp,
+          },
+          {
+            merge: true,
+          },
+        );
+
+        transaction.set(
+          studentRef,
+          {
+            courseIds: FieldValue.arrayUnion(courseId),
+            updatedAt: timestamp,
+          },
+          {
+            merge: true,
+          },
+        );
+
+        return {
           studentId: studentDocument.id,
-          institutionId,
-          displayName:
-            typeof student.displayName ===
-              "string" ?
-              student.displayName :
-              "",
-          email:
-            typeof student.email ===
-              "string" ?
-              student.email :
-              "",
-          isActive: true,
-          enrolledAt: timestamp,
-          updatedAt: timestamp,
-        },
-        {
-          merge: true,
-        },
-      );
-
-      batchWrite.set(
-        studentDocument.ref,
-        {
-          courseIds:
-            FieldValue.arrayUnion(
-              courseId,
-            ),
-          updatedAt: timestamp,
-        },
-        {
-          merge: true,
-        },
-      );
-
-      await batchWrite.commit();
-
-      return {
-        studentId: studentDocument.id,
-      };
+        };
+      });
     },
   );
 
@@ -1951,6 +2075,8 @@ export const unenrollStudent =
         );
       }
 
+      await requireActiveTeacher(teacherId, request.auth);
+
       const courseId = requiredString(
         request.data.courseId,
         "Course ID",
@@ -1965,72 +2091,72 @@ export const unenrollStudent =
         128,
       );
 
-      await requireActiveOwnedCourse(
-        teacherId,
-        courseId,
-        request.auth,
-      );
-
       const database = getFirestore();
+      const courseRef = database.collection("courses").doc(courseId);
+      const enrollmentReference = courseRef
+        .collection("students")
+        .doc(studentId);
+      const studentReference = database
+        .collection("users")
+        .doc(studentId);
 
-      const enrollmentReference =
-        database
-          .collection("courses")
-          .doc(courseId)
-          .collection("students")
-          .doc(studentId);
+      return await database.runTransaction(async (transaction) => {
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
+        const course = courseDoc.data()!;
+        if (course.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
+        if (course.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
 
-      const enrollment =
-        await enrollmentReference.get();
+        const enrollment = await transaction.get(enrollmentReference);
+        if (!enrollment.exists) {
+          throw new HttpsError(
+            "not-found",
+            "Student is not enrolled in this course.",
+          );
+        }
 
-      if (!enrollment.exists) {
-        throw new HttpsError(
-          "not-found",
-          "Student is not enrolled in this course.",
+        await transaction.get(studentReference);
+
+        const timestamp = FieldValue.serverTimestamp();
+
+        transaction.set(
+          enrollmentReference,
+          {
+            isActive: false,
+            updatedAt: timestamp,
+          },
+          {
+            merge: true,
+          },
         );
-      }
 
-      const studentReference =
-        database
-          .collection("users")
-          .doc(studentId);
+        transaction.set(
+          studentReference,
+          {
+            courseIds: FieldValue.arrayRemove(courseId),
+            updatedAt: timestamp,
+          },
+          {
+            merge: true,
+          },
+        );
 
-      const timestamp =
-        FieldValue.serverTimestamp();
-
-      const batchWrite =
-        database.batch();
-
-      batchWrite.set(
-        enrollmentReference,
-        {
-          isActive: false,
-          updatedAt: timestamp,
-        },
-        {
-          merge: true,
-        },
-      );
-
-      batchWrite.set(
-        studentReference,
-        {
-          courseIds:
-            FieldValue.arrayRemove(
-              courseId,
-            ),
-          updatedAt: timestamp,
-        },
-        {
-          merge: true,
-        },
-      );
-
-      await batchWrite.commit();
-
-      return {
-        success: true,
-      };
+        return {
+          success: true,
+        };
+      });
     },
   );
 
@@ -2058,7 +2184,7 @@ export const createSchedule =
         128,
       );
 
-      const course = await requireActiveOwnedCourse(
+      await requireActiveOwnedCourse(
         teacherId,
         courseId,
         request.auth,
@@ -2114,6 +2240,25 @@ export const createSchedule =
       return await database.runTransaction(async (transaction) => {
         // Read conflict lock document inside transaction
         await transaction.get(lockRef);
+
+        const courseRef = database.collection("courses").doc(courseId);
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
+        const courseData = courseDoc.data()!;
+        if (courseData.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
+        if (courseData.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
 
         // Query active schedules taught by this teacher on this dayIndex
         const teacherSchedulesQuery = database
@@ -2178,6 +2323,29 @@ export const createSchedule =
             "";
         const timestamp = FieldValue.serverTimestamp();
 
+        const courseLabel = courseData.name || courseData.code;
+        const timeSlot = `${startTime} - ${endTime}`;
+        const notificationRequests = recipientIds.map((studentId) => ({
+          id: `schedule_create_${reference.id}_1_${studentId}`,
+          payload: {
+            userId: studentId,
+            type: "schedule_created",
+            title: "Class Schedule Created",
+            message:
+              `A new class schedule for ${courseLabel} on ${day} ` +
+              `(${timeSlot}) was created.`,
+            courseId,
+            entityId: reference.id,
+          },
+        }));
+
+        const notifItems = await prepareNotifications(
+          database,
+          transaction,
+          notificationRequests,
+        );
+
+        // ALL READS ARE COMPLETE. COMMENCE WRITES:
         // Update deterministic schedule lock document
         transaction.set(
           lockRef,
@@ -2192,8 +2360,10 @@ export const createSchedule =
 
         transaction.create(reference, {
           courseId,
-          courseCode: typeof course.code === "string" ? course.code : "",
-          courseName: typeof course.name === "string" ? course.name : "",
+          courseCode:
+            typeof courseData.code === "string" ? courseData.code : "",
+          courseName:
+            typeof courseData.name === "string" ? courseData.name : "",
           teacherId,
           teacherName,
           dayIndex,
@@ -2225,27 +2395,7 @@ export const createSchedule =
           createdAt: timestamp,
         });
 
-        const courseLabel = course.name || course.code;
-        const timeSlot = `${startTime} - ${endTime}`;
-        for (const studentId of recipientIds) {
-          const notifId = `schedule_create_${reference.id}_1_${studentId}`;
-          queueNotification(
-            database,
-            transaction,
-            notifId,
-            {
-              userId: studentId,
-              type: "schedule_created",
-              title: "Class Schedule Created",
-              message:
-                `A new class schedule for ${courseLabel} on ${day} ` +
-                `(${timeSlot}) was created.`,
-              courseId,
-              entityId: reference.id,
-            },
-            timestamp,
-          );
-        }
+        commitNotifications(transaction, notifItems, timestamp);
 
         return {
           scheduleId: reference.id,
@@ -2285,7 +2435,7 @@ export const updateSchedule =
         128,
       );
 
-      const course = await requireActiveOwnedCourse(
+      await requireActiveOwnedCourse(
         teacherId,
         courseId,
         request.auth,
@@ -2350,6 +2500,25 @@ export const updateSchedule =
           throw new HttpsError(
             "permission-denied",
             "You do not manage this schedule.",
+          );
+        }
+
+        const courseRef = database.collection("courses").doc(courseId);
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
+        const courseData = courseDoc.data()!;
+        if (courseData.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
+        if (courseData.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
           );
         }
 
@@ -2437,6 +2606,30 @@ export const updateSchedule =
           "schedule",
         );
 
+        const currentRev = (Number(existing.revision) || 0) + 1;
+        const courseLabel = courseData.name || courseData.code;
+        const timeSlot = `${startTime} - ${endTime}`;
+        const notificationRequests = recipientIds.map((studentId) => ({
+          id: `schedule_update_${scheduleId}_${currentRev}_${studentId}`,
+          payload: {
+            userId: studentId,
+            type: "schedule_updated",
+            title: "Class Schedule Updated",
+            message:
+              `The class schedule for ${courseLabel} on ${day} ` +
+              `(${timeSlot}) has been updated.`,
+            courseId,
+            entityId: scheduleId,
+          },
+        }));
+
+        const notifItems = await prepareNotifications(
+          database,
+          transaction,
+          notificationRequests,
+        );
+
+        // ALL READS ARE COMPLETE. COMMENCE WRITES:
         const timestamp = FieldValue.serverTimestamp();
 
         // Update all acquired lock documents
@@ -2452,12 +2645,12 @@ export const updateSchedule =
           );
         }
 
-        const currentRev = (Number(existing.revision) || 0) + 1;
-
         transaction.update(reference, {
           courseId,
-          courseCode: typeof course.code === "string" ? course.code : "",
-          courseName: typeof course.name === "string" ? course.name : "",
+          courseCode:
+            typeof courseData.code === "string" ? courseData.code : "",
+          courseName:
+            typeof courseData.name === "string" ? courseData.name : "",
           dayIndex: targetDayIndex,
           day,
           startTime,
@@ -2486,28 +2679,7 @@ export const updateSchedule =
           createdAt: timestamp,
         });
 
-        const courseLabel = course.name || course.code;
-        const timeSlot = `${startTime} - ${endTime}`;
-        for (const studentId of recipientIds) {
-          const notifId =
-            `schedule_update_${scheduleId}_${currentRev}_${studentId}`;
-          queueNotification(
-            database,
-            transaction,
-            notifId,
-            {
-              userId: studentId,
-              type: "schedule_updated",
-              title: "Class Schedule Updated",
-              message:
-                `The class schedule for ${courseLabel} on ${day} ` +
-                `(${timeSlot}) has been updated.`,
-              courseId,
-              entityId: scheduleId,
-            },
-            timestamp,
-          );
-        }
+        commitNotifications(transaction, notifItems, timestamp);
 
         return {
           success: true,
@@ -2586,6 +2758,30 @@ export const deleteSchedule =
           .doc(`${teacherId}_${dayIndex}`);
         await transaction.get(lockRef);
 
+        const currentRev = (Number(data.revision) || 0) + 1;
+        const courseLabel = course.name || course.code;
+        const timeSlot = `${data.startTime} - ${data.endTime}`;
+        const notificationRequests = recipientIds.map((studentId) => ({
+          id: `schedule_delete_${scheduleId}_${currentRev}_${studentId}`,
+          payload: {
+            userId: studentId,
+            type: "schedule_deleted",
+            title: "Class Schedule Deleted",
+            message:
+              `The class schedule for ${courseLabel} on ${data.day} ` +
+              `(${timeSlot}) was cancelled.`,
+            courseId,
+            entityId: scheduleId,
+          },
+        }));
+
+        const notifItems = await prepareNotifications(
+          database,
+          transaction,
+          notificationRequests,
+        );
+
+        // ALL READS ARE COMPLETE. COMMENCE WRITES:
         const timestamp = FieldValue.serverTimestamp();
         transaction.set(
           lockRef,
@@ -2600,8 +2796,6 @@ export const deleteSchedule =
 
         transaction.delete(reference);
 
-        const currentRev = (Number(data.revision) || 0) + 1;
-
         const auditRef = database.collection("auditLogs").doc();
         transaction.create(auditRef, {
           action: "delete_schedule",
@@ -2614,28 +2808,7 @@ export const deleteSchedule =
           createdAt: timestamp,
         });
 
-        const courseLabel = course.name || course.code;
-        const timeSlot = `${data.startTime} - ${data.endTime}`;
-        for (const studentId of recipientIds) {
-          const notifId =
-            `schedule_delete_${scheduleId}_${currentRev}_${studentId}`;
-          queueNotification(
-            database,
-            transaction,
-            notifId,
-            {
-              userId: studentId,
-              type: "schedule_deleted",
-              title: "Class Schedule Deleted",
-              message:
-                `The class schedule for ${courseLabel} on ${data.day} ` +
-                `(${timeSlot}) was cancelled.`,
-              courseId,
-              entityId: scheduleId,
-            },
-            timestamp,
-          );
-        }
+        commitNotifications(transaction, notifItems, timestamp);
 
         return {
           success: true,
@@ -2671,12 +2844,11 @@ export const createAttendanceSession =
         128,
       );
 
-      const course =
-        await requireActiveOwnedCourse(
-          teacherId,
-          courseId,
-          request.auth,
-        );
+      await requireActiveOwnedCourse(
+        teacherId,
+        courseId,
+        request.auth,
+      );
 
       const classType = requiredString(
         request.data.classType,
@@ -2770,113 +2942,78 @@ export const createAttendanceSession =
       }
 
       const database = getFirestore();
+      const courseRef = database.collection("courses").doc(courseId);
 
-      const existing = await database
-        .collection("attendanceSessions")
-        .where(
-          "courseId",
-          "==",
-          courseId,
-        )
-        .where(
-          "status",
-          "==",
-          "active",
-        )
-        .limit(1)
-        .get();
+      return await database.runTransaction(async (transaction) => {
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
+        const course = courseDoc.data()!;
+        if (course.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
+        if (course.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
 
-      if (!existing.empty) {
-        throw new HttpsError(
-          "already-exists",
-          "This course already has an active attendance session.",
-        );
-      }
+        const existingQuery = database
+          .collection("attendanceSessions")
+          .where("courseId", "==", courseId)
+          .where("status", "==", "active")
+          .limit(1);
 
-      // Read notification recipients before writing
-      const recipientIds = await getCourseNotificationRecipients(
-        database,
-        null,
-        courseId,
-        "attendance",
-      );
+        const existingSnap = await transaction.get(existingQuery);
 
-      const reference = database
-        .collection("attendanceSessions")
-        .doc();
+        if (!existingSnap.empty || course.activeSessionId) {
+          throw new HttpsError(
+            "already-exists",
+            "This course already has an active attendance session.",
+          );
+        }
 
-      const privateReference =
-        reference
-          .collection("private")
-          .doc("config");
-
-      const startedAt =
-        Timestamp.now();
-
-      const endsAt =
-        Timestamp.fromMillis(
-          startedAt.toMillis() +
-          durationMinutes * 60 * 1000,
-        );
-
-      const teacherName =
-        typeof teacher.displayName ===
-          "string" ?
-          teacher.displayName :
-          "";
-
-      const batchWrite =
-        database.batch();
-
-      batchWrite.create(
-        reference,
-        {
-          courseId,
-          courseCode:
-            typeof course.code === "string" ?
-              course.code :
-              "",
-          courseName:
-            typeof course.name === "string" ?
-              course.name :
-              "",
-          teacherId,
-          teacherName,
-          classType,
-          durationMinutes,
-          requiresPasscode,
-          requiresGps,
-          allowLateEntry,
-          status: "active",
-          startedAt,
-          endsAt,
-          createdAt:
-            FieldValue.serverTimestamp(),
-        },
-      );
-
-      batchWrite.create(
-        privateReference,
-        {
-          passcodeHash,
-          passcodeSalt,
-          latitude,
-          longitude,
-          radiusMeters,
-          createdAt:
-            FieldValue.serverTimestamp(),
-        },
-      );
-
-      const courseLabel = course.name || course.code;
-      const timestamp = FieldValue.serverTimestamp();
-      for (const studentId of recipientIds) {
-        const notifId = `attendance_session_${reference.id}_${studentId}`;
-        queueNotification(
+        // Read notification recipients inside transaction
+        const recipientIds = await getCourseNotificationRecipients(
           database,
-          batchWrite,
-          notifId,
-          {
+          transaction,
+          courseId,
+          "attendance",
+        );
+
+        const reference = database
+          .collection("attendanceSessions")
+          .doc();
+
+        const privateReference =
+          reference
+            .collection("private")
+            .doc("config");
+
+        const startedAt =
+          Timestamp.now();
+
+        const endsAt =
+          Timestamp.fromMillis(
+            startedAt.toMillis() +
+            durationMinutes * 60 * 1000,
+          );
+
+        const teacherName =
+          typeof teacher.displayName ===
+            "string" ?
+            teacher.displayName :
+            "";
+
+        const courseLabel = course.name || course.code;
+        const notificationRequests = recipientIds.map((studentId) => ({
+          id: `attendance_session_${reference.id}_${studentId}`,
+          payload: {
             userId: studentId,
             type: "attendance_session_created",
             title: "New Attendance Session",
@@ -2884,16 +3021,72 @@ export const createAttendanceSession =
             courseId,
             entityId: reference.id,
           },
-          timestamp,
+        }));
+
+        const notifItems = await prepareNotifications(
+          database,
+          transaction,
+          notificationRequests,
         );
-      }
 
-      await batchWrite.commit();
+        // ALL READS ARE COMPLETE. COMMENCE WRITES:
+        const timestamp = FieldValue.serverTimestamp();
 
-      return {
-        sessionId: reference.id,
-        passcode,
-      };
+        // Update course to coordinate mutual exclusion with archiveCourse!
+        transaction.update(courseRef, {
+          activeSessionId: reference.id,
+          updatedAt: timestamp,
+          revision: FieldValue.increment(1),
+        });
+
+        transaction.create(
+          reference,
+          {
+            courseId,
+            courseCode:
+              typeof course.code === "string" ?
+                course.code :
+                "",
+            courseName:
+              typeof course.name === "string" ?
+                course.name :
+                "",
+            teacherId,
+            teacherName,
+            classType,
+            durationMinutes,
+            requiresPasscode,
+            requiresGps,
+            allowLateEntry,
+            status: "active",
+            startedAt,
+            endsAt,
+            createdAt: timestamp,
+          },
+        );
+
+        transaction.create(
+          privateReference,
+          {
+            passcodeHash,
+            passcodeSalt,
+            latitude,
+            longitude,
+            radiusMeters,
+            createdAt: timestamp,
+          },
+        );
+
+        commitNotifications(transaction, notifItems, timestamp);
+
+        return {
+          sessionId: reference.id,
+          passcode,
+          courseId,
+          startedAt: startedAt.toDate().toISOString(),
+          endsAt: endsAt.toDate().toISOString(),
+        };
+      });
     },
   );
 
@@ -3187,6 +3380,8 @@ export const setAttendanceStatus =
         );
       }
 
+      await requireActiveTeacher(teacherId, request.auth);
+
       const sessionId = requiredString(
         request.data.sessionId,
         "Session ID",
@@ -3221,99 +3416,103 @@ export const setAttendanceStatus =
       }
 
       const database = getFirestore();
-
       const sessionReference = database
         .collection("attendanceSessions")
         .doc(sessionId);
 
-      const sessionDocument =
-        await sessionReference.get();
+      return await database.runTransaction(async (transaction) => {
+        const sessionDocument = await transaction.get(sessionReference);
+        const session = sessionDocument.data();
 
-      const session =
-        sessionDocument.data();
+        if (!sessionDocument.exists || !session) {
+          throw new HttpsError(
+            "not-found",
+            "Attendance session not found.",
+          );
+        }
 
-      if (
-        !sessionDocument.exists ||
-        !session
-      ) {
-        throw new HttpsError(
-          "not-found",
-          "Attendance session not found.",
+        if (session.status !== "active") {
+          throw new HttpsError(
+            "failed-precondition",
+            "This attendance session is closed.",
+          );
+        }
+
+        const courseId = String(session.courseId);
+        const courseRef = database.collection("courses").doc(courseId);
+        const courseDoc = await transaction.get(courseRef);
+
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
+
+        const course = courseDoc.data()!;
+        if (course.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
+
+        if (course.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
+
+        const enrollmentReference = courseRef
+          .collection("students")
+          .doc(studentId);
+        const enrollment = await transaction.get(enrollmentReference);
+
+        if (
+          !enrollment.exists ||
+          enrollment.data()?.isActive === false
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This student is not enrolled in the course.",
+          );
+        }
+
+        const student = enrollment.data() ?? {};
+
+        const recordReference = database
+          .collection("attendanceRecords")
+          .doc(`${sessionId}_${studentId}`);
+
+        await transaction.get(recordReference);
+
+        transaction.set(
+          recordReference,
+          {
+            sessionId,
+            courseId,
+            courseCode: session.courseCode ?? "",
+            courseName: session.courseName ?? "",
+            studentId,
+            institutionId: student.institutionId ?? "",
+            studentName: student.displayName ?? "",
+            status,
+            markedBy: "teacher",
+            markedByUid: teacherId,
+            source: "manual",
+            markedAt:
+              status === "waiting" ?
+                null :
+                FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {
+            merge: true,
+          },
         );
-      }
 
-      if (session.status !== "active") {
-        throw new HttpsError(
-          "failed-precondition",
-          "This attendance session is closed.",
-        );
-      }
-
-      const courseId =
-        String(session.courseId);
-
-      await requireActiveOwnedCourse(
-        teacherId,
-        courseId,
-        request.auth,
-      );
-
-      const enrollment = await database
-        .collection("courses")
-        .doc(courseId)
-        .collection("students")
-        .doc(studentId)
-        .get();
-
-      if (
-        !enrollment.exists ||
-        enrollment.data()?.isActive === false
-      ) {
-        throw new HttpsError(
-          "failed-precondition",
-          "This student is not enrolled in the course.",
-        );
-      }
-
-      const student =
-        enrollment.data() ?? {};
-
-      const recordReference = database
-        .collection("attendanceRecords")
-        .doc(`${sessionId}_${studentId}`);
-
-      await recordReference.set(
-        {
-          sessionId,
-          courseId,
-          courseCode:
-            session.courseCode ?? "",
-          courseName:
-            session.courseName ?? "",
-          studentId,
-          institutionId:
-            student.institutionId ?? "",
-          studentName:
-            student.displayName ?? "",
-          status,
-          markedBy: "teacher",
-          markedByUid: teacherId,
-          source: "manual",
-          markedAt:
-            status === "waiting" ?
-              null :
-              FieldValue.serverTimestamp(),
-          updatedAt:
-            FieldValue.serverTimestamp(),
-        },
-        {
-          merge: true,
-        },
-      );
-
-      return {
-        success: true,
-      };
+        return {
+          success: true,
+        };
+      });
     },
   );
 
@@ -3366,7 +3565,7 @@ export const closeAttendanceSession =
       const courseId =
         String(session.courseId);
 
-      await requireOwnedCourse(
+      const course = await requireOwnedCourse(
         teacherId,
         courseId,
       );
@@ -3518,6 +3717,16 @@ export const closeAttendanceSession =
         );
       }
 
+      if (course && course.activeSessionId === sessionId) {
+        batchWrite.update(
+          database.collection("courses").doc(courseId),
+          {
+            activeSessionId: FieldValue.delete(),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+        );
+      }
+
       batchWrite.update(
         sessionReference,
         {
@@ -3560,12 +3769,11 @@ export const createAssessment =
         128,
       );
 
-      const course =
-        await requireActiveOwnedCourse(
-          teacherId,
-          courseId,
-          request.auth,
-        );
+      await requireActiveOwnedCourse(
+        teacherId,
+        courseId,
+        request.auth,
+      );
 
       const name = requiredString(
         request.data.name,
@@ -3594,6 +3802,7 @@ export const createAssessment =
       );
 
       const database = getFirestore();
+      const courseRef = database.collection("courses").doc(courseId);
       const reference = database
         .collection("assessments")
         .doc();
@@ -3602,45 +3811,61 @@ export const createAssessment =
         .collection("auditLogs")
         .doc();
 
-      const timestamp = FieldValue.serverTimestamp();
+      return await database.runTransaction(async (transaction) => {
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
+        const course = courseDoc.data()!;
+        if (course.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
+        if (course.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
 
-      const batchWrite = database.batch();
-      batchWrite.create(reference, {
-        courseId,
-        courseCode:
-          course.code ?? "",
-        courseName:
-          course.name ?? "",
-        name,
-        type,
-        maxScore,
-        date,
-        status: "draft",
-        revision: 1,
-        teacherId,
-        createdAt: timestamp,
-        updatedAt: timestamp,
+        const timestamp = FieldValue.serverTimestamp();
+        transaction.create(reference, {
+          courseId,
+          courseCode:
+            course.code ?? "",
+          courseName:
+            course.name ?? "",
+          name,
+          type,
+          maxScore,
+          date,
+          status: "draft",
+          revision: 1,
+          teacherId,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+
+        transaction.create(auditRef, {
+          action: "create_assessment",
+          assessmentId: reference.id,
+          courseId,
+          teacherId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          name,
+          type,
+          maxScore,
+          date,
+          createdAt: timestamp,
+        });
+
+        return {
+          assessmentId: reference.id,
+        };
       });
-
-      batchWrite.create(auditRef, {
-        action: "create_assessment",
-        assessmentId: reference.id,
-        courseId,
-        teacherId,
-        actorId: teacherId,
-        actorRole: "teacher",
-        name,
-        type,
-        maxScore,
-        date,
-        createdAt: timestamp,
-      });
-
-      await batchWrite.commit();
-
-      return {
-        assessmentId: reference.id,
-      };
     },
   );
 
@@ -4226,6 +4451,27 @@ export const publishAssessment =
           "marks",
         );
 
+        const courseLabel = course.name || course.code;
+        const notificationRequests = recipientIds.map((studentId) => ({
+          id: `assessment_publish_${assessmentId}_${studentId}`,
+          payload: {
+            userId: studentId,
+            type: "marks_published",
+            title: "Marks Published",
+            message:
+              `Marks for ${assessment.name} in ${courseLabel} ` +
+              "have been published.",
+            courseId,
+            entityId: assessmentId,
+          },
+        }));
+
+        const notifItems = await prepareNotifications(
+          database,
+          transaction,
+          notificationRequests,
+        );
+
         // WRITES
         const timestamp = FieldValue.serverTimestamp();
 
@@ -4261,26 +4507,7 @@ export const publishAssessment =
           createdAt: timestamp,
         });
 
-        const courseLabel = course.name || course.code;
-        for (const studentId of recipientIds) {
-          const notifId = `assessment_publish_${assessmentId}_${studentId}`;
-          queueNotification(
-            database,
-            transaction,
-            notifId,
-            {
-              userId: studentId,
-              type: "marks_published",
-              title: "Marks Published",
-              message:
-                `Marks for ${assessment.name} in ${courseLabel} ` +
-                "have been published.",
-              courseId,
-              entityId: assessmentId,
-            },
-            timestamp,
-          );
-        }
+        commitNotifications(transaction, notifItems, timestamp);
 
         return {
           success: true,
@@ -4503,81 +4730,97 @@ export const resetAttendancePasscode =
       );
 
       const database = getFirestore();
-
       const sessionReference = database
         .collection("attendanceSessions")
         .doc(sessionId);
 
-      const sessionDocument = await sessionReference.get();
-      const session = sessionDocument.data();
+      return await database.runTransaction(async (transaction) => {
+        const sessionDocument = await transaction.get(sessionReference);
+        const session = sessionDocument.data();
 
-      if (!sessionDocument.exists || !session) {
-        throw new HttpsError(
-          "not-found",
-          "Attendance session not found.",
+        if (!sessionDocument.exists || !session) {
+          throw new HttpsError(
+            "not-found",
+            "Attendance session not found.",
+          );
+        }
+
+        const courseId = String(session.courseId);
+        const courseRef = database.collection("courses").doc(courseId);
+        const courseDoc = await transaction.get(courseRef);
+
+        if (!courseDoc.exists) {
+          throw new HttpsError("not-found", "Course not found.");
+        }
+
+        const course = courseDoc.data()!;
+        if (course.teacherId !== teacherId) {
+          throw new HttpsError(
+            "permission-denied",
+            "You do not manage this course.",
+          );
+        }
+
+        if (course.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
+
+        if (session.status !== "active") {
+          throw new HttpsError(
+            "failed-precondition",
+            "Cannot reset passcode on an inactive or closed session.",
+          );
+        }
+
+        const newPasscode = String(crypto.randomInt(100000, 1000000));
+        const salt = crypto.randomBytes(16).toString("hex");
+        const passcodeHash = hashPasscode(newPasscode, salt);
+
+        const privateReference = sessionReference
+          .collection("private")
+          .doc("config");
+
+        await transaction.get(privateReference);
+
+        const auditReference = database.collection("auditLogs").doc();
+
+        const timestamp = FieldValue.serverTimestamp();
+        transaction.set(
+          privateReference,
+          {
+            passcodeHash,
+            passcodeSalt: salt,
+            updatedAt: timestamp,
+          },
+          {
+            merge: true,
+          },
         );
-      }
 
-      const courseId = String(session.courseId);
+        if (session.requiresPasscode !== true) {
+          transaction.update(sessionReference, {
+            requiresPasscode: true,
+            updatedAt: timestamp,
+          });
+        }
 
-      await requireActiveOwnedCourse(
-        teacherId,
-        courseId,
-        request.auth,
-      );
-
-      if (session.status !== "active") {
-        throw new HttpsError(
-          "failed-precondition",
-          "Cannot reset passcode on an inactive or closed session.",
-        );
-      }
-
-      const newPasscode = String(crypto.randomInt(100000, 1000000));
-      const salt = crypto.randomBytes(16).toString("hex");
-      const passcodeHash = hashPasscode(newPasscode, salt);
-
-      const privateReference = sessionReference
-        .collection("private")
-        .doc("config");
-
-      const batch = database.batch();
-
-      batch.set(
-        privateReference,
-        {
-          passcodeHash,
-          passcodeSalt: salt,
-          updatedAt: FieldValue.serverTimestamp(),
-        },
-        {
-          merge: true,
-        },
-      );
-
-      if (session.requiresPasscode !== true) {
-        batch.update(sessionReference, {
-          requiresPasscode: true,
-          updatedAt: FieldValue.serverTimestamp(),
+        transaction.create(auditReference, {
+          action: "reset_attendance_passcode",
+          sessionId,
+          courseId,
+          actorId: teacherId,
+          actorRole: "teacher",
+          createdAt: timestamp,
         });
-      }
 
-      const auditReference = database.collection("auditLogs").doc();
-      batch.create(auditReference, {
-        action: "reset_attendance_passcode",
-        sessionId,
-        courseId,
-        actorId: teacherId,
-        actorRole: "teacher",
-        createdAt: FieldValue.serverTimestamp(),
+        return {
+          success: true,
+          passcode: newPasscode,
+        };
       });
-
-      await batch.commit();
-
-      return {
-        success: true,
-        passcode: newPasscode,
-      };
     },
   );
 

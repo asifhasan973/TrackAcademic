@@ -1,9 +1,18 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:trackademic/core/models/in_app_notification.dart';
 import 'package:trackademic/core/services/auth_service.dart';
 import 'package:trackademic/core/services/notification_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/features/student/attendance/presentation/student_attendance_screen.dart';
+import 'package:trackademic/features/student/dashboard/presentation/student_dashboard_screen.dart';
+import 'package:trackademic/features/student/marks/presentation/student_marks_screen.dart';
+import 'package:trackademic/features/student/schedule/presentation/student_schedule_screen.dart';
+import 'package:trackademic/features/teacher/attendance/presentation/teacher_create_attendance_screen.dart';
+import 'package:trackademic/features/teacher/courses/presentation/teacher_courses_screen.dart';
+import 'package:trackademic/features/teacher/marks/presentation/teacher_marks_screen.dart';
+import 'package:trackademic/features/teacher/schedule/presentation/teacher_schedule_screen.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -168,9 +177,232 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     String userId,
     InAppNotification notification,
   ) async {
+    // 1. Mark as read first with safe error handling
     if (!notification.isRead) {
-      await _notificationService.markAsRead(userId, notification.id);
+      try {
+        await _notificationService.markAsRead(userId, notification.id);
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Failed to update notification read status: $error',
+              ),
+              backgroundColor: AppColors.danger,
+            ),
+          );
+        }
+      }
     }
+
+    if (!mounted) return;
+
+    // 2. Fetch authenticated user profile to verify role and active status
+    final database = FirebaseFirestore.instance;
+    final Map<String, dynamic>? userData;
+    try {
+      final userDoc = await database.collection('users').doc(userId).get();
+      if (!userDoc.exists || userDoc.data()?['isActive'] != true) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Your user account is inactive or not found.'),
+              backgroundColor: AppColors.danger,
+            ),
+          );
+        }
+        return;
+      }
+      userData = userDoc.data();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to verify user permissions: $error'),
+            backgroundColor: AppColors.danger,
+          ),
+        );
+      }
+      return;
+    }
+
+    if (!mounted) return;
+
+    final role = userData?['role'] as String? ?? '';
+    final isTeacher = role == 'teacher';
+    final isStudent = role == 'student';
+
+    if (!isTeacher && !isStudent) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Unrecognized user role for notification navigation.',
+            ),
+            backgroundColor: AppColors.warning,
+          ),
+        );
+      }
+      return;
+    }
+
+    final courseId = notification.courseId.trim();
+    bool isArchived = false;
+
+    // 3. If notification references a course, verify course existence and ownership/enrollment
+    if (courseId.isNotEmpty) {
+      try {
+        final courseDoc = await database
+            .collection('courses')
+            .doc(courseId)
+            .get();
+        if (!courseDoc.exists || courseDoc.data() == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('This course no longer exists.'),
+                backgroundColor: AppColors.warning,
+              ),
+            );
+          }
+          return;
+        }
+
+        final courseData = courseDoc.data()!;
+        isArchived = courseData['isActive'] != true;
+
+        if (isTeacher) {
+          final teacherId = courseData['teacherId'] as String? ?? '';
+          if (teacherId != userId) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('You do not manage this course.'),
+                  backgroundColor: AppColors.danger,
+                ),
+              );
+            }
+            return;
+          }
+        } else if (isStudent) {
+          final enrollmentDoc = await database
+              .collection('courses')
+              .doc(courseId)
+              .collection('students')
+              .doc(userId)
+              .get();
+
+          if (!enrollmentDoc.exists ||
+              enrollmentDoc.data()?['isActive'] == false) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'You are not currently enrolled in this course.',
+                  ),
+                  backgroundColor: AppColors.danger,
+                ),
+              );
+            }
+            return;
+          }
+        }
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to verify course access: $error'),
+              backgroundColor: AppColors.danger,
+            ),
+          );
+        }
+        return;
+      }
+    }
+
+    if (!mounted) return;
+
+    // 4. Resolve destination screen based on role, notification type, and archive status
+    final (navResult, notice) = NotificationNavigationResolver.resolve(
+      role: role,
+      notificationType: notification.type,
+      isArchived: isArchived,
+    );
+
+    if (notice != null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(notice),
+            backgroundColor: AppColors.information,
+          ),
+        );
+      }
+      return;
+    }
+
+    Widget? targetScreen;
+    switch (navResult) {
+      case NotificationNavigationResult.teacherCourses:
+        targetScreen = const TeacherCoursesScreen();
+        break;
+      case NotificationNavigationResult.teacherAttendance:
+        targetScreen = const TeacherCreateAttendanceScreen(
+          showBackButton: true,
+        );
+        break;
+      case NotificationNavigationResult.teacherMarks:
+        targetScreen = const TeacherMarksScreen();
+        break;
+      case NotificationNavigationResult.teacherSchedule:
+        targetScreen = const TeacherScheduleScreen();
+        break;
+      case NotificationNavigationResult.studentDashboard:
+        targetScreen = _buildStudentDashboard();
+        break;
+      case NotificationNavigationResult.studentAttendance:
+        targetScreen = const StudentAttendanceScreen();
+        break;
+      case NotificationNavigationResult.studentMarks:
+        targetScreen = const StudentMarksScreen();
+        break;
+      case NotificationNavigationResult.studentSchedule:
+        targetScreen = const StudentScheduleScreen();
+        break;
+      case NotificationNavigationResult.archivedNotice:
+      case NotificationNavigationResult.unrecognizedRole:
+        break;
+    }
+
+    if (targetScreen != null && mounted) {
+      await Navigator.of(
+        context,
+      ).push(MaterialPageRoute<void>(builder: (_) => targetScreen!));
+    }
+  }
+
+  Widget _buildStudentDashboard() {
+    return StudentDashboardScreen(
+      onOpenAttendance: () {
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => const StudentAttendanceScreen(),
+          ),
+        );
+      },
+      onOpenMarks: () {
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => const StudentMarksScreen()),
+        );
+      },
+      onOpenSchedule: () {
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => const StudentScheduleScreen(),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _markAllAsRead(String userId) async {
@@ -179,12 +411,15 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     });
 
     try {
-      final updated = await _notificationService.markAllAsRead(userId);
-      if (mounted && updated > 0) {
+      final result = await _notificationService.markAllAsRead(userId);
+      if (mounted && result.count > 0) {
+        final message = result.hasMore
+            ? 'Marked ${result.count} notifications as read (more unread items remaining).'
+            : 'Marked ${result.count} notifications as read.';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Marked $updated notifications as read.'),
-            duration: const Duration(seconds: 2),
+            content: Text(message),
+            duration: const Duration(seconds: 3),
           ),
         );
       }
@@ -369,6 +604,82 @@ class _NotificationTile extends StatelessWidget {
           AppColors.primary,
           AppColors.informationBackground,
         );
+    }
+  }
+}
+
+enum NotificationNavigationResult {
+  teacherCourses,
+  teacherAttendance,
+  teacherMarks,
+  teacherSchedule,
+  studentDashboard,
+  studentAttendance,
+  studentMarks,
+  studentSchedule,
+  archivedNotice,
+  unrecognizedRole,
+}
+
+class NotificationNavigationResolver {
+  static (NotificationNavigationResult, String?) resolve({
+    required String role,
+    required String notificationType,
+    required bool isArchived,
+  }) {
+    if (role != 'teacher' && role != 'student') {
+      return (NotificationNavigationResult.unrecognizedRole, null);
+    }
+
+    if (role == 'teacher') {
+      switch (notificationType) {
+        case 'join_request':
+        case 'course_archived':
+        case 'course_reactivated':
+          return (NotificationNavigationResult.teacherCourses, null);
+        case 'attendance_session_created':
+          if (isArchived) {
+            return (
+              NotificationNavigationResult.archivedNotice,
+              'This course is archived. Cannot manage live attendance.',
+            );
+          }
+          return (NotificationNavigationResult.teacherAttendance, null);
+        case 'assessment_publish':
+        case 'assessment_published':
+          return (NotificationNavigationResult.teacherMarks, null);
+        case 'schedule_created':
+        case 'schedule_updated':
+        case 'schedule_deleted':
+          return (NotificationNavigationResult.teacherSchedule, null);
+        default:
+          return (NotificationNavigationResult.teacherCourses, null);
+      }
+    } else {
+      switch (notificationType) {
+        case 'join_request_approved':
+        case 'join_request_rejected':
+        case 'course_archived':
+        case 'course_reactivated':
+          return (NotificationNavigationResult.studentDashboard, null);
+        case 'attendance_session_created':
+          if (isArchived) {
+            return (
+              NotificationNavigationResult.archivedNotice,
+              'This course is archived. Historical attendance is viewable in your records.',
+            );
+          }
+          return (NotificationNavigationResult.studentAttendance, null);
+        case 'assessment_publish':
+        case 'assessment_published':
+          return (NotificationNavigationResult.studentMarks, null);
+        case 'schedule_created':
+        case 'schedule_updated':
+        case 'schedule_deleted':
+          return (NotificationNavigationResult.studentSchedule, null);
+        default:
+          return (NotificationNavigationResult.studentDashboard, null);
+      }
     }
   }
 }

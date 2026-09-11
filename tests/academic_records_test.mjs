@@ -159,6 +159,19 @@ async function runAcademicRecordsTests() {
     });
   }
 
+  // Clean up any lingering schedules and scheduleLocks from prior runs
+  const oldSchedules = await db
+    .collection('schedules')
+    .where('teacherId', 'in', [teacher1Uid, teacher2Uid])
+    .get();
+  for (const doc of oldSchedules.docs) {
+    await doc.ref.delete();
+  }
+  const oldLocks = await db.collection('scheduleLocks').get();
+  for (const doc of oldLocks.docs) {
+    await doc.ref.delete();
+  }
+
   assert(true, 'Identities and initial course created');
 
   // ==========================================
