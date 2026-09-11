@@ -18,12 +18,13 @@ class _TeacherCoursesScreenState extends State<TeacherCoursesScreen> {
 
   late Future<List<TeacherCourse>> _coursesFuture;
 
+  bool _showArchived = false;
   String _searchQuery = '';
 
   @override
   void initState() {
     super.initState();
-    _coursesFuture = _service.loadMyCourses();
+    _coursesFuture = _service.loadMyCourses(includeArchived: true);
   }
 
   @override
@@ -133,7 +134,14 @@ class _TeacherCoursesScreenState extends State<TeacherCoursesScreen> {
   }
 
   Widget _buildCourseContent(List<TeacherCourse> courses) {
-    final visibleCourses = courses.where((course) {
+    final activeCount = courses.where((c) => c.isActive).length;
+    final archivedCount = courses.where((c) => !c.isActive).length;
+
+    final tabCourses = courses.where((course) {
+      return _showArchived ? !course.isActive : course.isActive;
+    }).toList();
+
+    final visibleCourses = tabCourses.where((course) {
       if (_searchQuery.isEmpty) {
         return true;
       }
@@ -151,28 +159,61 @@ class _TeacherCoursesScreenState extends State<TeacherCoursesScreen> {
       return values.contains(_searchQuery);
     }).toList();
 
-    if (courses.isEmpty) {
-      return const _EmptyCoursesCard();
-    }
-
-    if (visibleCourses.isEmpty) {
-      return const _MessageCard(
-        icon: Icons.search_off_rounded,
-        message: 'No courses match your search.',
-      );
-    }
-
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final course in visibleCourses) ...[
-          _CourseCard(
-            course: course,
-            onManageStudents: () {
-              _showStudentsDialog(course);
-            },
+        SegmentedButton<bool>(
+          segments: [
+            ButtonSegment<bool>(
+              value: false,
+              icon: const Icon(Icons.check_circle_outline_rounded, size: 18),
+              label: Text('Active ($activeCount)'),
+            ),
+            ButtonSegment<bool>(
+              value: true,
+              icon: const Icon(Icons.archive_outlined, size: 18),
+              label: Text('Archived ($archivedCount)'),
+            ),
+          ],
+          selected: {_showArchived},
+          onSelectionChanged: (selection) {
+            setState(() {
+              _showArchived = selection.first;
+            });
+          },
+        ),
+        const SizedBox(height: AppSpacing.large),
+        if (courses.isEmpty)
+          const _EmptyCoursesCard()
+        else if (tabCourses.isEmpty)
+          _MessageCard(
+            icon: _showArchived
+                ? Icons.archive_outlined
+                : Icons.menu_book_outlined,
+            message: _showArchived
+                ? 'No archived courses found.'
+                : 'No active courses. Create your first course to begin.',
+          )
+        else if (visibleCourses.isEmpty)
+          const _MessageCard(
+            icon: Icons.search_off_rounded,
+            message: 'No courses match your search.',
+          )
+        else
+          Column(
+            children: [
+              for (final course in visibleCourses) ...[
+                _CourseCard(
+                  course: course,
+                  onManageStudents: () => _showStudentsDialog(course),
+                  onEdit: () => _showEditCourseDialog(course),
+                  onArchive: () => _confirmArchiveCourse(course),
+                  onReactivate: () => _confirmReactivateCourse(course),
+                ),
+                const SizedBox(height: AppSpacing.regular),
+              ],
+            ],
           ),
-          const SizedBox(height: AppSpacing.regular),
-        ],
       ],
     );
   }
@@ -190,6 +231,108 @@ class _TeacherCoursesScreenState extends State<TeacherCoursesScreen> {
     }
   }
 
+  Future<void> _showEditCourseDialog(TeacherCourse course) async {
+    final updated = await showDialog<bool>(
+      context: context,
+      builder: (context) => _EditCourseDialog(course: course),
+    );
+
+    if (updated == true) {
+      _reload();
+    }
+  }
+
+  Future<void> _confirmArchiveCourse(TeacherCourse course) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Archive ${course.code}?'),
+          content: const Text(
+            'Archiving this course will make its schedules, assessments, '
+            'and student enrollment read-only.\n\n'
+            'Please ensure any active attendance session is closed before archiving.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.warning,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Archive course'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await _service.archiveCourse(course.id);
+      _reload();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${course.code} has been archived.')),
+        );
+      }
+    } on TeacherAcademicServiceException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
+        );
+      }
+    }
+  }
+
+  Future<void> _confirmReactivateCourse(TeacherCourse course) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Reactivate ${course.code}?'),
+          content: const Text(
+            'Reactivating this course will restore full editing permissions '
+            'for attendance sessions, schedules, assessments, and marks.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Reactivate course'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await _service.reactivateCourse(course.id);
+      _reload();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${course.code} has been reactivated.')),
+        );
+      }
+    } on TeacherAcademicServiceException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
+        );
+      }
+    }
+  }
+
   Future<void> _showStudentsDialog(TeacherCourse course) async {
     await showDialog<void>(
       context: context,
@@ -201,7 +344,7 @@ class _TeacherCoursesScreenState extends State<TeacherCoursesScreen> {
 
   void _reload() {
     setState(() {
-      _coursesFuture = _service.loadMyCourses();
+      _coursesFuture = _service.loadMyCourses(includeArchived: true);
     });
   }
 }
@@ -209,8 +352,17 @@ class _TeacherCoursesScreenState extends State<TeacherCoursesScreen> {
 class _CourseCard extends StatelessWidget {
   final TeacherCourse course;
   final VoidCallback onManageStudents;
+  final VoidCallback onEdit;
+  final VoidCallback onArchive;
+  final VoidCallback onReactivate;
 
-  const _CourseCard({required this.course, required this.onManageStudents});
+  const _CourseCard({
+    required this.course,
+    required this.onManageStudents,
+    required this.onEdit,
+    required this.onArchive,
+    required this.onReactivate,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -252,13 +404,54 @@ class _CourseCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      course.code,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 19,
-                        fontWeight: FontWeight.w900,
-                      ),
+                    Row(
+                      children: [
+                        Text(
+                          course.code,
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 19,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        if (!course.isActive) ...[
+                          const SizedBox(width: AppSpacing.small),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.warningBackground,
+                              borderRadius: BorderRadius.circular(
+                                AppRadius.small,
+                              ),
+                              border: Border.all(
+                                color: AppColors.warning.withValues(alpha: 0.4),
+                              ),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.archive_outlined,
+                                  size: 13,
+                                  color: AppColors.warning,
+                                ),
+                                SizedBox(width: 4),
+                                Text(
+                                  'Archived',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: AppColors.warning,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                     const SizedBox(height: AppSpacing.extraSmall),
                     Text(
@@ -300,10 +493,47 @@ class _CourseCard extends StatelessWidget {
           const SizedBox(height: AppSpacing.large),
           Align(
             alignment: Alignment.centerRight,
-            child: OutlinedButton.icon(
-              onPressed: onManageStudents,
-              icon: const Icon(Icons.group_rounded),
-              label: const Text('Manage students'),
+            child: Wrap(
+              alignment: WrapAlignment.end,
+              spacing: AppSpacing.small,
+              runSpacing: AppSpacing.small,
+              children: [
+                if (course.isActive) ...[
+                  OutlinedButton.icon(
+                    onPressed: onManageStudents,
+                    icon: const Icon(Icons.group_rounded, size: 18),
+                    label: const Text('Manage students'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: onEdit,
+                    icon: const Icon(Icons.edit_outlined, size: 18),
+                    label: const Text('Edit course'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: onArchive,
+                    icon: const Icon(
+                      Icons.archive_outlined,
+                      size: 18,
+                      color: AppColors.warning,
+                    ),
+                    label: const Text(
+                      'Archive',
+                      style: TextStyle(color: AppColors.warning),
+                    ),
+                  ),
+                ] else ...[
+                  OutlinedButton.icon(
+                    onPressed: onManageStudents,
+                    icon: const Icon(Icons.group_rounded, size: 18),
+                    label: const Text('View students'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: onReactivate,
+                    icon: const Icon(Icons.unarchive_outlined, size: 18),
+                    label: const Text('Reactivate course'),
+                  ),
+                ],
+              ],
             ),
           ),
         ],
@@ -488,6 +718,193 @@ class _CreateCourseDialogState extends State<_CreateCourseDialog> {
   }
 }
 
+class _EditCourseDialog extends StatefulWidget {
+  final TeacherCourse course;
+
+  const _EditCourseDialog({required this.course});
+
+  @override
+  State<_EditCourseDialog> createState() => _EditCourseDialogState();
+}
+
+class _EditCourseDialogState extends State<_EditCourseDialog> {
+  static const _service = TeacherAcademicService();
+
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _nameController;
+  late final TextEditingController _departmentController;
+  late final TextEditingController _batchController;
+  late final TextEditingController _sectionController;
+  late final TextEditingController _semesterController;
+  late final TextEditingController _roomController;
+
+  bool _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.course.name);
+    _departmentController = TextEditingController(
+      text: widget.course.department ?? '',
+    );
+    _batchController = TextEditingController(text: widget.course.batch ?? '');
+    _sectionController = TextEditingController(
+      text: widget.course.section ?? '',
+    );
+    _semesterController = TextEditingController(
+      text: widget.course.semester ?? '',
+    );
+    _roomController = TextEditingController(text: widget.course.room ?? '');
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _departmentController.dispose();
+    _batchController.dispose();
+    _sectionController.dispose();
+    _semesterController.dispose();
+    _roomController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Edit ${widget.course.code}'),
+      content: SizedBox(
+        width: 520,
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(AppSpacing.medium),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(AppRadius.medium),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.lock_outline_rounded,
+                        size: 18,
+                        color: AppColors.textTertiary,
+                      ),
+                      const SizedBox(width: AppSpacing.small),
+                      Text(
+                        'Course code: ${widget.course.code}',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextFormField(
+                  controller: _nameController,
+                  decoration: const InputDecoration(labelText: 'Course name *'),
+                  validator: (val) {
+                    if (val == null || val.trim().isEmpty) {
+                      return 'Course name is required';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextFormField(
+                  controller: _departmentController,
+                  decoration: const InputDecoration(labelText: 'Department'),
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextFormField(
+                  controller: _batchController,
+                  decoration: const InputDecoration(labelText: 'Batch'),
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextFormField(
+                  controller: _sectionController,
+                  decoration: const InputDecoration(labelText: 'Section'),
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextFormField(
+                  controller: _semesterController,
+                  decoration: const InputDecoration(labelText: 'Semester'),
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextFormField(
+                  controller: _roomController,
+                  decoration: const InputDecoration(labelText: 'Room'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _submitting ? null : () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _submitting ? null : _submit,
+          child: _submitting
+              ? const SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Text('Save changes'),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _submitting = true);
+    try {
+      await _service.updateCourse(
+        courseId: widget.course.id,
+        name: _nameController.text.trim(),
+        department: _optional(_departmentController.text),
+        batch: _optional(_batchController.text),
+        section: _optional(_sectionController.text),
+        semester: _optional(_semesterController.text),
+        room: _optional(_roomController.text),
+      );
+      if (mounted) {
+        Navigator.pop(context, true);
+      }
+    } on TeacherAcademicServiceException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _submitting = false);
+      }
+    }
+  }
+
+  String? _optional(String value) {
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+}
+
 class _CourseStudentsDialog extends StatefulWidget {
   final TeacherCourse course;
 
@@ -536,26 +953,59 @@ class _CourseStudentsDialogState extends State<_CourseStudentsDialog> {
         height: 500,
         child: Column(
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _institutionIdController,
-                    textCapitalization: TextCapitalization.characters,
-                    decoration: const InputDecoration(
-                      labelText: 'Student institution ID',
-                      hintText: 'Enter a registered user ID',
-                    ),
+            if (!widget.course.isActive)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(AppSpacing.medium),
+                margin: const EdgeInsets.only(bottom: AppSpacing.small),
+                decoration: BoxDecoration(
+                  color: AppColors.warningBackground,
+                  borderRadius: BorderRadius.circular(AppRadius.medium),
+                  border: Border.all(
+                    color: AppColors.warning.withValues(alpha: 0.4),
                   ),
                 ),
-                const SizedBox(width: AppSpacing.medium),
-                FilledButton.icon(
-                  onPressed: _enrolling ? null : _enroll,
-                  icon: const Icon(Icons.person_add_rounded),
-                  label: const Text('Enroll'),
+                child: const Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline_rounded,
+                      color: AppColors.warning,
+                      size: 20,
+                    ),
+                    SizedBox(width: AppSpacing.small),
+                    Expanded(
+                      child: Text(
+                        'This course is archived. Enrolling and removing students is disabled.',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              )
+            else
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _institutionIdController,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: const InputDecoration(
+                        labelText: 'Student institution ID',
+                        hintText: 'Enter a registered user ID',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.medium),
+                  FilledButton.icon(
+                    onPressed: _enrolling ? null : _enroll,
+                    icon: const Icon(Icons.person_add_rounded),
+                    label: const Text('Enroll'),
+                  ),
+                ],
+              ),
             const SizedBox(height: AppSpacing.small),
             Row(
               children: [
@@ -680,7 +1130,7 @@ class _CourseStudentsDialogState extends State<_CourseStudentsDialog> {
                                 );
                               },
                             ),
-                            if (isEnrolled)
+                            if (isEnrolled && widget.course.isActive)
                               IconButton(
                                 tooltip: 'Remove student',
                                 onPressed: removing

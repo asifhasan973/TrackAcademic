@@ -34,6 +34,24 @@ type CreateCourseData = {
   room?: unknown;
 };
 
+type UpdateCourseData = {
+  courseId?: unknown;
+  name?: unknown;
+  department?: unknown;
+  batch?: unknown;
+  section?: unknown;
+  semester?: unknown;
+  room?: unknown;
+};
+
+type ArchiveCourseData = {
+  courseId?: unknown;
+};
+
+type ReactivateCourseData = {
+  courseId?: unknown;
+};
+
 type EnrollStudentData = {
   courseId?: unknown;
   institutionId?: unknown;
@@ -535,14 +553,140 @@ async function requireOwnedCourse(
     );
   }
 
+  // NOTE: Allows both active and archived courses for historical operations!
+  return data;
+}
+
+async function requireActiveOwnedCourse(
+  teacherId: string,
+  courseId: string,
+  auth?: {token?: {email_verified?: boolean}},
+): Promise<FirebaseFirestore.DocumentData> {
+  const data = await requireOwnedCourse(teacherId, courseId, auth);
+
   if (data.isActive !== true) {
     throw new HttpsError(
       "failed-precondition",
-      "This course is inactive.",
+      "This course is archived.",
     );
   }
 
   return data;
+}
+
+type GetterLike = {
+  get: {
+    (ref: FirebaseFirestore.DocumentReference):
+      Promise<FirebaseFirestore.DocumentSnapshot>;
+    (query: FirebaseFirestore.Query):
+      Promise<FirebaseFirestore.QuerySnapshot>;
+  };
+};
+
+async function getCourseNotificationRecipients(
+  database: FirebaseFirestore.Firestore,
+  getter: GetterLike | null,
+  courseId: string,
+  category?: "attendance" | "marks" | "schedule",
+): Promise<string[]> {
+  const studentsQuery = database
+    .collection("courses")
+    .doc(courseId)
+    .collection("students")
+    .where("isActive", "==", true);
+
+  const studentsSnap = getter ?
+    await getter.get(studentsQuery) :
+    await studentsQuery.get();
+
+  const MAX_RECIPIENTS = 100;
+  if (studentsSnap.docs.length > MAX_RECIPIENTS) {
+    throw new HttpsError(
+      "resource-exhausted",
+      `Course exceeds maximum recipient limit of ${MAX_RECIPIENTS}.`,
+    );
+  }
+
+  if (studentsSnap.empty) {
+    return [];
+  }
+
+  if (!category) {
+    return studentsSnap.docs.map(
+      (d: FirebaseFirestore.QueryDocumentSnapshot) => d.id,
+    );
+  }
+
+  const userRefs = studentsSnap.docs.map(
+    (d: FirebaseFirestore.QueryDocumentSnapshot) =>
+      database.collection("users").doc(d.id),
+  );
+  const userDocs = await Promise.all(
+    userRefs.map((ref: FirebaseFirestore.DocumentReference) =>
+      getter ? getter.get(ref) : ref.get(),
+    ),
+  );
+
+  const eligibleStudentIds: string[] = [];
+  for (let i = 0; i < userDocs.length; i++) {
+    const userDoc = userDocs[i];
+    const studentId = studentsSnap.docs[i].id;
+    if (!userDoc.exists) continue;
+    const userData = userDoc.data();
+    const prefs = userData?.notificationPreferences;
+    if (prefs && prefs[category] === false) {
+      continue;
+    }
+    eligibleStudentIds.push(studentId);
+  }
+
+  return eligibleStudentIds;
+}
+
+interface NotificationPayload {
+  userId: string;
+  type: string;
+  title: string;
+  message: string;
+  courseId: string;
+  entityId: string;
+}
+
+function queueNotification(
+  database: FirebaseFirestore.Firestore,
+  writer: {
+    set: (
+      ref: FirebaseFirestore.DocumentReference,
+      data: Record<string, unknown>,
+      options?: {merge?: boolean},
+    ) => unknown;
+  },
+  id: string,
+  payload: NotificationPayload,
+  timestamp: FirebaseFirestore.FieldValue,
+) {
+  const ref = database
+    .collection("notifications")
+    .doc(payload.userId)
+    .collection("items")
+    .doc(id);
+
+  writer.set(
+    ref,
+    {
+      id,
+      userId: payload.userId,
+      type: payload.type,
+      title: payload.title,
+      message: payload.message,
+      courseId: payload.courseId,
+      entityId: payload.entityId,
+      isRead: false,
+      createdAt: timestamp,
+      readAt: null,
+    },
+    {merge: true},
+  );
 }
 
 function degreesToRadians(value: number): number {
@@ -820,9 +964,10 @@ export const getCourseJoinCode =
         128,
       );
 
-      const course = await requireOwnedCourse(
+      const course = await requireActiveOwnedCourse(
         userId,
         courseId,
+        request.auth,
       );
 
       const existing =
@@ -951,7 +1096,13 @@ export const requestJoinCourse =
         );
       }
 
-      await requestReference.set({
+      const attempt =
+        (previous.data()?.attempt ?? previous.data()?.revision ?? 0) + 1;
+      const timestamp = FieldValue.serverTimestamp();
+
+      const batch = database.batch();
+
+      batch.set(requestReference, {
         courseId,
         courseCode: course.code ?? "",
         courseName: course.name ?? "",
@@ -961,9 +1112,31 @@ export const requestJoinCourse =
         institutionId: student.institutionId ?? "",
         email: student.email ?? "",
         status: "pending",
-        createdAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
+        attempt,
+        revision: attempt,
+        createdAt: timestamp,
+        updatedAt: timestamp,
       });
+
+      const requester = student.displayName || "A student";
+      const courseLabel = course.name || course.code;
+      const notifId = `join_request_${courseId}_${studentId}_${attempt}`;
+      queueNotification(
+        database,
+        batch,
+        notifId,
+        {
+          userId: course.teacherId,
+          type: "join_request",
+          title: "New Join Request",
+          message: `${requester} requested to join ${courseLabel}.`,
+          courseId,
+          entityId: requestReference.id,
+        },
+        timestamp,
+      );
+
+      await batch.commit();
 
       return {
         requestId: requestReference.id,
@@ -1041,10 +1214,20 @@ export const respondCourseJoinRequest =
       const courseId = String(data.courseId);
       const studentId = String(data.studentId);
 
-      await requireOwnedCourse(
-        teacherId,
-        courseId,
-      );
+      let course: FirebaseFirestore.DocumentData;
+      if (response === "approved") {
+        course = await requireActiveOwnedCourse(
+          teacherId,
+          courseId,
+          request.auth,
+        );
+      } else {
+        course = await requireOwnedCourse(
+          teacherId,
+          courseId,
+          request.auth,
+        );
+      }
 
       const batch = database.batch();
 
@@ -1111,22 +1294,385 @@ export const respondCourseJoinRequest =
         );
       }
 
+      const timestamp = FieldValue.serverTimestamp();
+
       batch.update(
         requestReference,
         {
           status: response,
           respondedBy: teacherId,
-          respondedAt:
-            FieldValue.serverTimestamp(),
-          updatedAt:
-            FieldValue.serverTimestamp(),
+          respondedAt: timestamp,
+          updatedAt: timestamp,
         },
+      );
+
+      const attempt = data.attempt ?? data.revision ?? 1;
+      const notifId = `join_decision_${requestId}_${attempt}`;
+      queueNotification(
+        database,
+        batch,
+        notifId,
+        {
+          userId: studentId,
+          type: response === "approved" ?
+            "join_request_approved" :
+            "join_request_rejected",
+          title: response === "approved" ?
+            "Join Request Approved" :
+            "Join Request Rejected",
+          message: response === "approved" ?
+            `Your request to join ${course.name || course.code} was approved.` :
+            `Your request to join ${course.name || course.code} was rejected.`,
+          courseId,
+          entityId: requestId,
+        },
+        timestamp,
       );
 
       await batch.commit();
 
       return {
         success: true,
+      };
+    },
+  );
+
+export const updateCourse =
+  onCall<UpdateCourseData>(
+    {
+      timeoutSeconds: 30,
+      maxInstances: 10,
+    },
+    async (request) => {
+      const teacherId = request.auth?.uid;
+
+      if (!teacherId) {
+        throw new HttpsError(
+          "unauthenticated",
+          "Sign in before updating a course.",
+        );
+      }
+
+      await requireActiveTeacher(teacherId, request.auth);
+
+      const courseId = requiredString(
+        request.data.courseId,
+        "Course ID",
+        1,
+        128,
+      );
+
+      const course = await requireActiveOwnedCourse(
+        teacherId,
+        courseId,
+        request.auth,
+      );
+
+      const name = requiredString(
+        request.data.name,
+        "Course name",
+        2,
+        120,
+      );
+
+      const department = optionalString(
+        request.data.department,
+        "Department",
+        120,
+      );
+
+      const batch = optionalString(
+        request.data.batch,
+        "Batch",
+        80,
+      );
+
+      const section = optionalString(
+        request.data.section,
+        "Section",
+        80,
+      );
+
+      const semester = optionalString(
+        request.data.semester,
+        "Semester",
+        80,
+      );
+
+      const room = optionalString(
+        request.data.room,
+        "Room",
+        80,
+      );
+
+      const database = getFirestore();
+      const courseRef = database.collection("courses").doc(courseId);
+      const auditRef = database.collection("auditLogs").doc();
+      const timestamp = FieldValue.serverTimestamp();
+
+      const batchWrite = database.batch();
+      batchWrite.update(courseRef, {
+        name,
+        department,
+        batch,
+        section,
+        semester,
+        room,
+        revision: FieldValue.increment(1),
+        updatedAt: timestamp,
+      });
+
+      batchWrite.create(auditRef, {
+        action: "course.updated",
+        courseId,
+        teacherId,
+        actorId: teacherId,
+        actorRole: "teacher",
+        previous: {
+          name: course.name,
+          department: course.department,
+          batch: course.batch,
+          section: course.section,
+          semester: course.semester,
+          room: course.room,
+        },
+        updated: {
+          name,
+          department,
+          batch,
+          section,
+          semester,
+          room,
+        },
+        createdAt: timestamp,
+      });
+
+      await batchWrite.commit();
+
+      return {
+        success: true,
+        updated: true,
+        courseId,
+      };
+    },
+  );
+
+export const archiveCourse =
+  onCall<ArchiveCourseData>(
+    {
+      timeoutSeconds: 30,
+      maxInstances: 10,
+    },
+    async (request) => {
+      const teacherId = request.auth?.uid;
+
+      if (!teacherId) {
+        throw new HttpsError(
+          "unauthenticated",
+          "Sign in before archiving a course.",
+        );
+      }
+
+      await requireActiveTeacher(teacherId, request.auth);
+
+      const courseId = requiredString(
+        request.data.courseId,
+        "Course ID",
+        1,
+        128,
+      );
+
+      const course = await requireActiveOwnedCourse(
+        teacherId,
+        courseId,
+        request.auth,
+      );
+
+      const database = getFirestore();
+
+      // Check for active attendance sessions
+      const activeSessions = await database
+        .collection("attendanceSessions")
+        .where("courseId", "==", courseId)
+        .where("status", "==", "active")
+        .limit(1)
+        .get();
+
+      if (!activeSessions.empty) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Cannot archive course with an active attendance session. " +
+            "Please close all active sessions first.",
+        );
+      }
+
+      // Read enrollment recipients before any transaction writes
+      const recipientIds = await getCourseNotificationRecipients(
+        database,
+        null,
+        courseId,
+      );
+
+      const currentRevision =
+        (course.lifecycleRevision ?? course.revision ?? 0) + 1;
+      const timestamp = FieldValue.serverTimestamp();
+
+      const batchWrite = database.batch();
+      const courseRef = database.collection("courses").doc(courseId);
+
+      batchWrite.update(courseRef, {
+        isActive: false,
+        lifecycleRevision: currentRevision,
+        revision: currentRevision,
+        archivedAt: timestamp,
+        archivedBy: teacherId,
+        updatedAt: timestamp,
+      });
+
+      const auditRef = database.collection("auditLogs").doc();
+      batchWrite.create(auditRef, {
+        action: "course.archived",
+        courseId,
+        teacherId,
+        actorId: teacherId,
+        actorRole: "teacher",
+        revision: currentRevision,
+        createdAt: timestamp,
+      });
+
+      const courseLabel = course.name || course.code;
+      for (const studentId of recipientIds) {
+        const notifId =
+          `course_archive_${courseId}_${currentRevision}_${studentId}`;
+        queueNotification(
+          database,
+          batchWrite,
+          notifId,
+          {
+            userId: studentId,
+            type: "course_archived",
+            title: "Course Archived",
+            message:
+              `${courseLabel} has been archived by the instructor.`,
+            courseId,
+            entityId: courseId,
+          },
+          timestamp,
+        );
+      }
+
+      await batchWrite.commit();
+
+      return {
+        success: true,
+        archived: true,
+        courseId,
+        revision: currentRevision,
+      };
+    },
+  );
+
+export const reactivateCourse =
+  onCall<ReactivateCourseData>(
+    {
+      timeoutSeconds: 30,
+      maxInstances: 10,
+    },
+    async (request) => {
+      const teacherId = request.auth?.uid;
+
+      if (!teacherId) {
+        throw new HttpsError(
+          "unauthenticated",
+          "Sign in before reactivating a course.",
+        );
+      }
+
+      await requireActiveTeacher(teacherId, request.auth);
+
+      const courseId = requiredString(
+        request.data.courseId,
+        "Course ID",
+        1,
+        128,
+      );
+
+      const course = await requireOwnedCourse(
+        teacherId,
+        courseId,
+        request.auth,
+      );
+
+      if (course.isActive === true) {
+        throw new HttpsError(
+          "failed-precondition",
+          "This course is already active.",
+        );
+      }
+
+      const database = getFirestore();
+
+      // Read enrollment recipients before any transaction writes
+      const recipientIds = await getCourseNotificationRecipients(
+        database,
+        null,
+        courseId,
+      );
+
+      const currentRevision =
+        (course.lifecycleRevision ?? course.revision ?? 0) + 1;
+      const timestamp = FieldValue.serverTimestamp();
+
+      const batchWrite = database.batch();
+      const courseRef = database.collection("courses").doc(courseId);
+
+      batchWrite.update(courseRef, {
+        isActive: true,
+        lifecycleRevision: currentRevision,
+        revision: currentRevision,
+        reactivatedAt: timestamp,
+        reactivatedBy: teacherId,
+        updatedAt: timestamp,
+      });
+
+      const auditRef = database.collection("auditLogs").doc();
+      batchWrite.create(auditRef, {
+        action: "course.reactivated",
+        courseId,
+        teacherId,
+        actorId: teacherId,
+        actorRole: "teacher",
+        revision: currentRevision,
+        createdAt: timestamp,
+      });
+
+      const courseLabel = course.name || course.code;
+      for (const studentId of recipientIds) {
+        const notifId =
+          `course_reactivate_${courseId}_${currentRevision}_${studentId}`;
+        queueNotification(
+          database,
+          batchWrite,
+          notifId,
+          {
+            userId: studentId,
+            type: "course_reactivated",
+            title: "Course Reactivated",
+            message: `${courseLabel} has been reactivated.`,
+            courseId,
+            entityId: courseId,
+          },
+          timestamp,
+        );
+      }
+
+      await batchWrite.commit();
+
+      return {
+        success: true,
+        reactivated: true,
+        courseId,
+        revision: currentRevision,
       };
     },
   );
@@ -1249,6 +1795,8 @@ export const createCourse =
         semester,
         room,
         isActive: true,
+        revision: 1,
+        lifecycleRevision: 1,
         createdAt: timestamp,
         updatedAt: timestamp,
       });
@@ -1291,9 +1839,10 @@ export const enrollStudent =
           request.data.institutionId,
         );
 
-      await requireOwnedCourse(
+      await requireActiveOwnedCourse(
         teacherId,
         courseId,
+        request.auth,
       );
 
       const database = getFirestore();
@@ -1416,9 +1965,10 @@ export const unenrollStudent =
         128,
       );
 
-      await requireOwnedCourse(
+      await requireActiveOwnedCourse(
         teacherId,
         courseId,
+        request.auth,
       );
 
       const database = getFirestore();
@@ -1508,9 +2058,10 @@ export const createSchedule =
         128,
       );
 
-      const course = await requireOwnedCourse(
+      const course = await requireActiveOwnedCourse(
         teacherId,
         courseId,
+        request.auth,
       );
 
       const dayIndex = validateDayIndex(
@@ -1612,6 +2163,14 @@ export const createSchedule =
           }
         }
 
+        // Read notification recipients before writing
+        const recipientIds = await getCourseNotificationRecipients(
+          database,
+          transaction,
+          courseId,
+          "schedule",
+        );
+
         const reference = database.collection("schedules").doc();
         const teacherName =
           typeof teacher.displayName === "string" ?
@@ -1644,6 +2203,7 @@ export const createSchedule =
           room: room.trim(),
           classType: classType.trim(),
           status: "scheduled",
+          revision: 1,
           createdAt: timestamp,
           updatedAt: timestamp,
         });
@@ -1664,6 +2224,28 @@ export const createSchedule =
           classType: classType.trim(),
           createdAt: timestamp,
         });
+
+        const courseLabel = course.name || course.code;
+        const timeSlot = `${startTime} - ${endTime}`;
+        for (const studentId of recipientIds) {
+          const notifId = `schedule_create_${reference.id}_1_${studentId}`;
+          queueNotification(
+            database,
+            transaction,
+            notifId,
+            {
+              userId: studentId,
+              type: "schedule_created",
+              title: "Class Schedule Created",
+              message:
+                `A new class schedule for ${courseLabel} on ${day} ` +
+                `(${timeSlot}) was created.`,
+              courseId,
+              entityId: reference.id,
+            },
+            timestamp,
+          );
+        }
 
         return {
           scheduleId: reference.id,
@@ -1703,9 +2285,10 @@ export const updateSchedule =
         128,
       );
 
-      const course = await requireOwnedCourse(
+      const course = await requireActiveOwnedCourse(
         teacherId,
         courseId,
+        request.auth,
       );
 
       const dayIndex = validateDayIndex(
@@ -1846,6 +2429,14 @@ export const updateSchedule =
           }
         }
 
+        // Read notification recipients before writing
+        const recipientIds = await getCourseNotificationRecipients(
+          database,
+          transaction,
+          courseId,
+          "schedule",
+        );
+
         const timestamp = FieldValue.serverTimestamp();
 
         // Update all acquired lock documents
@@ -1861,6 +2452,8 @@ export const updateSchedule =
           );
         }
 
+        const currentRev = (Number(existing.revision) || 0) + 1;
+
         transaction.update(reference, {
           courseId,
           courseCode: typeof course.code === "string" ? course.code : "",
@@ -1871,6 +2464,7 @@ export const updateSchedule =
           endTime,
           room: room.trim(),
           classType: classType.trim(),
+          revision: currentRev,
           updatedAt: timestamp,
         });
 
@@ -1888,8 +2482,32 @@ export const updateSchedule =
           endTime,
           room: room.trim(),
           classType: classType.trim(),
+          revision: currentRev,
           createdAt: timestamp,
         });
+
+        const courseLabel = course.name || course.code;
+        const timeSlot = `${startTime} - ${endTime}`;
+        for (const studentId of recipientIds) {
+          const notifId =
+            `schedule_update_${scheduleId}_${currentRev}_${studentId}`;
+          queueNotification(
+            database,
+            transaction,
+            notifId,
+            {
+              userId: studentId,
+              type: "schedule_updated",
+              title: "Class Schedule Updated",
+              message:
+                `The class schedule for ${courseLabel} on ${day} ` +
+                `(${timeSlot}) has been updated.`,
+              courseId,
+              entityId: scheduleId,
+            },
+            timestamp,
+          );
+        }
 
         return {
           success: true,
@@ -1943,6 +2561,25 @@ export const deleteSchedule =
           );
         }
 
+        const courseId = String(data.courseId);
+        const courseRef = database.collection("courses").doc(courseId);
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists || courseDoc.data()?.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
+        const course = courseDoc.data()!;
+
+        // Read notification recipients before writing
+        const recipientIds = await getCourseNotificationRecipients(
+          database,
+          transaction,
+          courseId,
+          "schedule",
+        );
+
         const dayIndex = Number(data.dayIndex);
         const lockRef = database
           .collection("scheduleLocks")
@@ -1963,16 +2600,42 @@ export const deleteSchedule =
 
         transaction.delete(reference);
 
+        const currentRev = (Number(data.revision) || 0) + 1;
+
         const auditRef = database.collection("auditLogs").doc();
         transaction.create(auditRef, {
           action: "delete_schedule",
           scheduleId,
-          courseId: String(data.courseId),
+          courseId,
           teacherId,
           actorId: teacherId,
           actorRole: "teacher",
+          revision: currentRev,
           createdAt: timestamp,
         });
+
+        const courseLabel = course.name || course.code;
+        const timeSlot = `${data.startTime} - ${data.endTime}`;
+        for (const studentId of recipientIds) {
+          const notifId =
+            `schedule_delete_${scheduleId}_${currentRev}_${studentId}`;
+          queueNotification(
+            database,
+            transaction,
+            notifId,
+            {
+              userId: studentId,
+              type: "schedule_deleted",
+              title: "Class Schedule Deleted",
+              message:
+                `The class schedule for ${courseLabel} on ${data.day} ` +
+                `(${timeSlot}) was cancelled.`,
+              courseId,
+              entityId: scheduleId,
+            },
+            timestamp,
+          );
+        }
 
         return {
           success: true,
@@ -2009,9 +2672,10 @@ export const createAttendanceSession =
       );
 
       const course =
-        await requireOwnedCourse(
+        await requireActiveOwnedCourse(
           teacherId,
           courseId,
+          request.auth,
         );
 
       const classType = requiredString(
@@ -2129,6 +2793,14 @@ export const createAttendanceSession =
         );
       }
 
+      // Read notification recipients before writing
+      const recipientIds = await getCourseNotificationRecipients(
+        database,
+        null,
+        courseId,
+        "attendance",
+      );
+
       const reference = database
         .collection("attendanceSessions")
         .doc();
@@ -2195,6 +2867,26 @@ export const createAttendanceSession =
             FieldValue.serverTimestamp(),
         },
       );
+
+      const courseLabel = course.name || course.code;
+      const timestamp = FieldValue.serverTimestamp();
+      for (const studentId of recipientIds) {
+        const notifId = `attendance_session_${reference.id}_${studentId}`;
+        queueNotification(
+          database,
+          batchWrite,
+          notifId,
+          {
+            userId: studentId,
+            type: "attendance_session_created",
+            title: "New Attendance Session",
+            message: `Attendance session opened for ${courseLabel}.`,
+            courseId,
+            entityId: reference.id,
+          },
+          timestamp,
+        );
+      }
 
       await batchWrite.commit();
 
@@ -2286,6 +2978,18 @@ export const submitAttendance =
       const courseId =
         String(session.courseId);
 
+      const courseDoc = await database
+        .collection("courses")
+        .doc(courseId)
+        .get();
+
+      if (!courseDoc.exists || courseDoc.data()?.isActive !== true) {
+        throw new HttpsError(
+          "failed-precondition",
+          "This course is archived.",
+        );
+      }
+
       const enrollment = await database
         .collection("courses")
         .doc(courseId)
@@ -2316,27 +3020,42 @@ export const submitAttendance =
           requiredString(
             request.data.passcode,
             "Passcode",
-            1,
-            20,
+            4,
+            8,
           );
 
-        const expectedHash = configuration.passcodeHash;
-        const salt = configuration.passcodeSalt;
+        const storedHash =
+          configuration.passcodeHash;
+        const storedSalt =
+          configuration.passcodeSalt;
 
         if (
-          typeof expectedHash !== "string" ||
-          typeof salt !== "string" ||
-          !verifyPasscode(submittedPasscode, salt, expectedHash)
+          typeof storedHash !== "string" ||
+          typeof storedSalt !== "string"
         ) {
           throw new HttpsError(
-            "permission-denied",
-            "Incorrect attendance passcode.",
+            "failed-precondition",
+            "Passcode is not configured for this session.",
+          );
+        }
+
+        const validPasscode =
+          verifyPasscode(
+            submittedPasscode,
+            storedSalt,
+            storedHash,
+          );
+
+        if (!validPasscode) {
+          throw new HttpsError(
+            "invalid-argument",
+            "Incorrect passcode.",
           );
         }
       }
 
       if (session.requiresGps === true) {
-        const latitude =
+        const studentLatitude =
           requiredNumber(
             request.data.latitude,
             "Latitude",
@@ -2344,7 +3063,7 @@ export const submitAttendance =
             90,
           );
 
-        const longitude =
+        const studentLongitude =
           requiredNumber(
             request.data.longitude,
             "Longitude",
@@ -2352,26 +3071,36 @@ export const submitAttendance =
             180,
           );
 
-        const targetLatitude =
-          Number(configuration.latitude);
-
-        const targetLongitude =
-          Number(configuration.longitude);
-
+        const centerLatitude =
+          configuration.latitude;
+        const centerLongitude =
+          configuration.longitude;
         const radiusMeters =
-          Number(configuration.radiusMeters);
+          configuration.radiusMeters;
 
-        const distance = distanceMeters(
-          latitude,
-          longitude,
-          targetLatitude,
-          targetLongitude,
-        );
+        if (
+          typeof centerLatitude !== "number" ||
+          typeof centerLongitude !== "number" ||
+          typeof radiusMeters !== "number"
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "GPS location is not configured for this session.",
+          );
+        }
+
+        const distance =
+          distanceMeters(
+            studentLatitude,
+            studentLongitude,
+            centerLatitude,
+            centerLongitude,
+          );
 
         if (distance > radiusMeters) {
           throw new HttpsError(
-            "permission-denied",
-            "You are outside the allowed attendance area.",
+            "failed-precondition",
+            "You are outside the required attendance area.",
           );
         }
       }
@@ -2523,9 +3252,10 @@ export const setAttendanceStatus =
       const courseId =
         String(session.courseId);
 
-      await requireOwnedCourse(
+      await requireActiveOwnedCourse(
         teacherId,
         courseId,
+        request.auth,
       );
 
       const enrollment = await database
@@ -2831,9 +3561,10 @@ export const createAssessment =
       );
 
       const course =
-        await requireOwnedCourse(
+        await requireActiveOwnedCourse(
           teacherId,
           courseId,
+          request.auth,
         );
 
       const name = requiredString(
@@ -2980,6 +3711,15 @@ export const updateAssessment =
         const assessment = assessmentDoc.data()!;
         const courseId = String(assessment.courseId);
 
+        const courseRef = database.collection("courses").doc(courseId);
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists || courseDoc.data()?.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
+
         if (assessment.teacherId !== teacherId) {
           throw new HttpsError(
             "permission-denied",
@@ -3106,6 +3846,15 @@ export const deleteAssessment =
         const assessment = assessmentDoc.data()!;
         const courseId = String(assessment.courseId);
 
+        const courseRef = database.collection("courses").doc(courseId);
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists || courseDoc.data()?.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
+
         if (assessment.teacherId !== teacherId) {
           throw new HttpsError(
             "permission-denied",
@@ -3116,14 +3865,13 @@ export const deleteAssessment =
         if (assessment.status !== "draft") {
           throw new HttpsError(
             "failed-precondition",
-            "Published assessments cannot be deleted.",
+            "Only draft assessments can be deleted.",
           );
         }
 
         const marksQuery = database
           .collection("marks")
-          .where("assessmentId", "==", assessmentId)
-          .where("courseId", "==", courseId);
+          .where("assessmentId", "==", assessmentId);
 
         const marksSnapshot = await transaction.get(marksQuery);
 
@@ -3131,17 +3879,26 @@ export const deleteAssessment =
         if (marksSnapshot.docs.length > SAFE_LIMIT) {
           throw new HttpsError(
             "resource-exhausted",
-            `Assessment has ${marksSnapshot.docs.length} mark documents, ` +
+            `Assessment has ${marksSnapshot.docs.length} marks, ` +
               `which exceeds the safe limit of ${SAFE_LIMIT}.`,
           );
         }
 
-        for (const markDoc of marksSnapshot.docs) {
-          transaction.delete(markDoc.ref);
-        }
-
+        // Delete assessment document
         transaction.delete(assessmentReference);
 
+        // Delete associated marks (matching assessmentId and courseId)
+        for (const markDoc of marksSnapshot.docs) {
+          const markData = markDoc.data();
+          if (
+            markData.assessmentId === assessmentId &&
+            markData.courseId === courseId
+          ) {
+            transaction.delete(markDoc.ref);
+          }
+        }
+
+        // Create immutable audit record
         const auditRef = database.collection("auditLogs").doc();
         transaction.create(auditRef, {
           action: "delete_draft_assessment",
@@ -3150,7 +3907,8 @@ export const deleteAssessment =
           teacherId,
           actorId: teacherId,
           actorRole: "teacher",
-          assessmentName: assessment.name ?? "",
+          deletedName: assessment.name ?? "",
+          deletedType: assessment.type ?? "",
           deletedMarksCount: marksSnapshot.docs.length,
           createdAt: FieldValue.serverTimestamp(),
         });
@@ -3270,6 +4028,15 @@ export const saveAssessmentMarks =
 
         const assessment = assessmentDocument.data()!;
         const courseId = String(assessment.courseId);
+
+        const courseRef = database.collection("courses").doc(courseId);
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists || courseDoc.data()?.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
 
         if (assessment.teacherId !== teacherId) {
           throw new HttpsError(
@@ -3410,6 +4177,18 @@ export const publishAssessment =
         }
 
         const assessment = document.data()!;
+        const courseId = String(assessment.courseId);
+
+        const courseRef = database.collection("courses").doc(courseId);
+        const courseDoc = await transaction.get(courseRef);
+        if (!courseDoc.exists || courseDoc.data()?.isActive !== true) {
+          throw new HttpsError(
+            "failed-precondition",
+            "This course is archived.",
+          );
+        }
+        const course = courseDoc.data()!;
+
         if (assessment.teacherId !== teacherId) {
           throw new HttpsError(
             "permission-denied",
@@ -3438,6 +4217,14 @@ export const publishAssessment =
               `which exceeds the safe limit of ${SAFE_LIMIT}.`,
           );
         }
+
+        // Read notification recipients before writing
+        const recipientIds = await getCourseNotificationRecipients(
+          database,
+          transaction,
+          courseId,
+          "marks",
+        );
 
         // WRITES
         const timestamp = FieldValue.serverTimestamp();
@@ -3473,6 +4260,27 @@ export const publishAssessment =
           marksCount: marksSnapshot.docs.length,
           createdAt: timestamp,
         });
+
+        const courseLabel = course.name || course.code;
+        for (const studentId of recipientIds) {
+          const notifId = `assessment_publish_${assessmentId}_${studentId}`;
+          queueNotification(
+            database,
+            transaction,
+            notifId,
+            {
+              userId: studentId,
+              type: "marks_published",
+              title: "Marks Published",
+              message:
+                `Marks for ${assessment.name} in ${courseLabel} ` +
+                "have been published.",
+              courseId,
+              entityId: assessmentId,
+            },
+            timestamp,
+          );
+        }
 
         return {
           success: true,
@@ -3610,22 +4418,8 @@ export const correctPublishedMark =
           );
         }
 
-        const mark = markDoc.data()!;
-
-        // Verify relationships
-        if (
-          mark.assessmentId !== assessmentId ||
-          mark.courseId !== courseId ||
-          mark.studentId !== studentId
-        ) {
-          throw new HttpsError(
-            "invalid-argument",
-            "Mark record does not match the requested assessment, " +
-              "course, or student.",
-          );
-        }
-
-        const currentScore = Number(mark.score);
+        const markData = markDoc.data()!;
+        const currentScore = Number(markData.score ?? 0);
 
         // A same-score request must perform NO mark or audit write!
         if (currentScore === newScore) {
@@ -3638,9 +4432,16 @@ export const correctPublishedMark =
           };
         }
 
-        // --- WRITES AFTER READS ---
+        // --- ALL WRITES AFTER READS ---
         const timestamp = FieldValue.serverTimestamp();
 
+        // Increment assessment revision
+        transaction.update(assessmentReference, {
+          revision: FieldValue.increment(1),
+          updatedAt: timestamp,
+        });
+
+        // Update mark document
         transaction.update(markReference, {
           score: newScore,
           previousScore: currentScore,
@@ -3648,15 +4449,16 @@ export const correctPublishedMark =
           correctedBy: teacherId,
           correctedAt: timestamp,
           updatedAt: timestamp,
-          published: true, // Retain student visibility!
+          published: true,
         });
 
-        const auditRef = database.collection("auditLogs").doc();
-        transaction.create(auditRef, {
+        // Record immutable audit log
+        const auditReference = database.collection("auditLogs").doc();
+        transaction.create(auditReference, {
           action: "correct_published_mark",
           assessmentId,
-          courseId,
           studentId,
+          courseId,
           teacherId,
           actorId: teacherId,
           actorRole: "teacher",
@@ -3718,7 +4520,7 @@ export const resetAttendancePasscode =
 
       const courseId = String(session.courseId);
 
-      await requireOwnedCourse(
+      await requireActiveOwnedCourse(
         teacherId,
         courseId,
         request.auth,

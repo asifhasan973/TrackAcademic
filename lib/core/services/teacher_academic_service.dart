@@ -30,7 +30,9 @@ class TeacherAcademicService {
     return user.uid;
   }
 
-  Future<List<TeacherCourse>> loadMyCourses() async {
+  Future<List<TeacherCourse>> loadMyCourses({
+    bool includeArchived = false,
+  }) async {
     final snapshot = await _database
         .collection('courses')
         .where('teacherId', isEqualTo: _teacherId)
@@ -38,12 +40,40 @@ class TeacherAcademicService {
 
     final courses = snapshot.docs
         .map((document) => TeacherCourse.fromMap(document.id, document.data()))
-        .where((course) => course.isActive)
+        .where((course) => includeArchived ? true : course.isActive)
         .toList();
 
     courses.sort((first, second) => first.code.compareTo(second.code));
 
     return courses;
+  }
+
+  Future<void> updateCourse({
+    required String courseId,
+    required String name,
+    String? department,
+    String? batch,
+    String? section,
+    String? semester,
+    String? room,
+  }) async {
+    await _call('updateCourse', {
+      'courseId': courseId,
+      'name': name,
+      'department': department,
+      'batch': batch,
+      'section': section,
+      'semester': semester,
+      'room': room,
+    });
+  }
+
+  Future<void> archiveCourse(String courseId) async {
+    await _call('archiveCourse', {'courseId': courseId});
+  }
+
+  Future<void> reactivateCourse(String courseId) async {
+    await _call('reactivateCourse', {'courseId': courseId});
   }
 
   Future<String> createCourse({

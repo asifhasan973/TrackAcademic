@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:trackademic/core/services/auth_service.dart';
+import 'package:trackademic/core/services/notification_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/features/notifications/presentation/notifications_screen.dart';
 import 'package:trackademic/features/student/attendance/presentation/student_attendance_screen.dart';
 import 'package:trackademic/features/student/dashboard/presentation/student_dashboard_screen.dart';
 import 'package:trackademic/features/student/marks/presentation/student_marks_screen.dart';
@@ -177,10 +180,14 @@ class _RoleWorkspaceScreenState extends State<RoleWorkspaceScreen> {
       appBar: AppBar(
         title: Text('${widget.roleName} Workspace'),
         actions: [
-          IconButton(
-            tooltip: 'Notifications',
-            onPressed: () {},
-            icon: const Icon(Icons.notifications_none_rounded),
+          _NotificationIconButton(
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => const NotificationsScreen(),
+                ),
+              );
+            },
           ),
           IconButton(
             tooltip: 'Profile',
@@ -370,6 +377,51 @@ class _ModulePlaceholder extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _NotificationIconButton extends StatelessWidget {
+  final VoidCallback onPressed;
+
+  const _NotificationIconButton({required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    const authService = AuthService();
+    const notificationService = NotificationService();
+    final userId = authService.currentUser?.uid ?? '';
+
+    if (userId.isEmpty) {
+      return IconButton(
+        tooltip: 'Notifications',
+        onPressed: onPressed,
+        icon: const Icon(Icons.notifications_none_rounded),
+      );
+    }
+
+    return StreamBuilder<int>(
+      stream: notificationService.streamUnreadCount(userId),
+      builder: (context, snapshot) {
+        final unreadCount = snapshot.data ?? 0;
+
+        return IconButton(
+          tooltip: 'Notifications',
+          onPressed: onPressed,
+          icon: Badge(
+            isLabelVisible: unreadCount > 0,
+            label: Text(
+              unreadCount > 99 ? '99+' : '$unreadCount',
+              style: const TextStyle(fontSize: 10),
+            ),
+            child: Icon(
+              unreadCount > 0
+                  ? Icons.notifications_rounded
+                  : Icons.notifications_none_rounded,
+            ),
+          ),
+        );
+      },
     );
   }
 }

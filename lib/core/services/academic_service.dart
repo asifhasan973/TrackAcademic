@@ -46,10 +46,12 @@ class AcademicService {
     return courseIds;
   }
 
-  Future<List<AcademicCourse>> loadCurrentCourses() async {
+  Future<List<AcademicCourse>> loadCurrentCourses({
+    bool includeArchived = false,
+  }) async {
     final courseIds = await loadCurrentCourseIds();
 
-    return _loadCourses(courseIds);
+    return _loadCourses(courseIds, includeArchived: includeArchived);
   }
 
   Future<List<StudentAttendanceSummary>> loadAttendanceSummaries() async {
@@ -106,7 +108,10 @@ class AcademicService {
     );
   }
 
-  Future<List<AcademicCourse>> _loadCourses(List<String> courseIds) async {
+  Future<List<AcademicCourse>> _loadCourses(
+    List<String> courseIds, {
+    bool includeArchived = false,
+  }) async {
     if (courseIds.isEmpty) {
       return const [];
     }
@@ -128,7 +133,7 @@ class AcademicService {
 
       final course = AcademicCourse.fromMap(document.id, data);
 
-      if (!course.isActive) {
+      if (!includeArchived && !course.isActive) {
         continue;
       }
 
