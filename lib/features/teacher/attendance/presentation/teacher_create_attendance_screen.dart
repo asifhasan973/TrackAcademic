@@ -1,12 +1,16 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:trackademic/core/services/attendance_csv_builder.dart';
+import 'package:trackademic/core/services/file_saver/file_saver.dart';
 import 'package:trackademic/core/services/teacher_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/features/teacher/attendance/presentation/course_attendance_register_screen.dart';
 import 'package:trackademic/features/teacher/attendance/presentation/teacher_attendance_summary_screen.dart';
 
 class TeacherCreateAttendanceScreen extends StatefulWidget {
@@ -40,7 +44,73 @@ class _TeacherCreateAttendanceScreenState
     final courses = await _service.loadMyCourses();
     final sessions = await _service.loadAttendanceSessions();
 
-    return _AttendancePageData(courses: courses, sessions: sessions);
+    final db = FirebaseFirestore.instance;
+    final activeCourses = courses.where((c) => c.isActive).toList();
+    final overviews = <CourseAttendanceOverview>[];
+
+    for (final course in activeCourses) {
+      final closedSessions = sessions
+          .where((s) => s.courseId == course.id && s.status == 'closed')
+          .toList();
+      closedSessions.sort((a, b) {
+        final aDate = a.startedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final bDate = b.startedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return aDate.compareTo(bDate);
+      });
+
+      final students = await _service.loadCourseStudents(course.id);
+      students.sort((a, b) => a.institutionId.compareTo(b.institutionId));
+
+      final recordsSnapshot = await db
+          .collection('attendanceRecords')
+          .where('courseId', isEqualTo: course.id)
+          .get();
+
+      final matrix = <String, Map<String, String>>{};
+      for (final doc in recordsSnapshot.docs) {
+        final d = doc.data();
+        final sId = d['studentId'] as String? ?? '';
+        final sessId = d['sessionId'] as String? ?? '';
+        final st = (d['status'] as String? ?? 'absent').toLowerCase();
+        if (sId.isNotEmpty && sessId.isNotEmpty) {
+          matrix.putIfAbsent(sId, () => {})[sessId] = st;
+        }
+      }
+
+      final totalPossible = students.length * closedSessions.length;
+      var totalAttended = 0;
+      for (final student in students) {
+        final sMap = matrix[student.uid] ?? const {};
+        for (final s in closedSessions) {
+          final st = (sMap[s.id] ?? 'absent').toLowerCase();
+          if (st == 'present' || st == 'late') {
+            totalAttended++;
+          }
+        }
+      }
+
+      final avgPercentage = totalPossible > 0
+          ? (totalAttended / totalPossible) * 100
+          : 0.0;
+
+      overviews.add(
+        CourseAttendanceOverview(
+          course: course,
+          enrolledStudentsCount: students.length,
+          finalizedClassesCount: closedSessions.length,
+          averageAttendancePercentage: avgPercentage,
+          closedSessions: closedSessions,
+          students: students,
+          matrix: matrix,
+        ),
+      );
+    }
+
+    return _AttendancePageData(
+      courses: courses,
+      sessions: sessions,
+      courseOverviews: overviews,
+    );
   }
 
   @override
@@ -110,29 +180,47 @@ class _TeacherCreateAttendanceScreenState
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        FilledButton.icon(
-          onPressed: data.courses.isEmpty
-              ? null
-              : () async {
-                  final result =
-                      await showDialog<CreateAttendanceSessionResult>(
-                        context: context,
-                        builder: (context) =>
-                            _CreateSessionDialog(courses: data.courses),
-                      );
+        _buildCourseAttendanceOverview(data),
+        const SizedBox(height: AppSpacing.large),
+        const Divider(),
+        const SizedBox(height: AppSpacing.large),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'Attendance Sessions',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w900,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            FilledButton.icon(
+              onPressed: data.courses.isEmpty
+                  ? null
+                  : () async {
+                      final result =
+                          await showDialog<CreateAttendanceSessionResult>(
+                            context: context,
+                            builder: (context) =>
+                                _CreateSessionDialog(courses: data.courses),
+                          );
 
-                  if (result != null) {
-                    if (result.passcode != null) {
-                      _sessionPasscodes[result.sessionId] = result.passcode!;
-                      if (mounted) {
-                        await _showPasscodeCreatedDialog(result.passcode!);
+                      if (result != null) {
+                        if (result.passcode != null) {
+                          _sessionPasscodes[result.sessionId] =
+                              result.passcode!;
+                          if (mounted) {
+                            await _showPasscodeCreatedDialog(result.passcode!);
+                          }
+                        }
+                        setState(_reload);
                       }
-                    }
-                    setState(_reload);
-                  }
-                },
-          icon: const Icon(Icons.add_rounded),
-          label: const Text('Create attendance session'),
+                    },
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('Create attendance session'),
+            ),
+          ],
         ),
         if (data.courses.isEmpty) ...[
           const SizedBox(height: AppSpacing.medium),
@@ -158,6 +246,98 @@ class _TeacherCreateAttendanceScreenState
           ],
       ],
     );
+  }
+
+  Widget _buildCourseAttendanceOverview(_AttendancePageData data) {
+    final activeOverviews = data.courseOverviews;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Course Attendance Overview',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w900,
+            color: AppColors.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Overall finalized attendance register and summary for each course.',
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+        ),
+        const SizedBox(height: AppSpacing.medium),
+        if (activeOverviews.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(AppSpacing.large),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: const Text(
+              'No active courses found.',
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+          )
+        else
+          for (final overview in activeOverviews) ...[
+            _CourseAttendanceOverviewCard(
+              overview: overview,
+              onViewRegister: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) =>
+                        CourseAttendanceRegisterScreen(course: overview.course),
+                  ),
+                ).then((_) => setState(_reload));
+              },
+              onDownloadCsv: () => _downloadCourseCsv(overview),
+            ),
+            const SizedBox(height: AppSpacing.regular),
+          ],
+      ],
+    );
+  }
+
+  Future<void> _downloadCourseCsv(CourseAttendanceOverview overview) async {
+    try {
+      final csvContent = AttendanceCsvBuilder.buildFullRegisterCsv(
+        courseCode: overview.course.code,
+        courseName: overview.course.name,
+        students: overview.students,
+        sessions: overview.closedSessions,
+        matrix: overview.matrix,
+      );
+
+      final filename = AttendanceCsvBuilder.generateFullRegisterFilename(
+        courseCode: overview.course.code,
+      );
+
+      final saver = FileSaver();
+      final destination = await saver.saveFile(
+        filename: filename,
+        content: csvContent,
+        mimeType: 'text/csv',
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Course register exported: $destination'),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to export CSV: $e')));
+      }
+    }
   }
 
   void _showSummary(TeacherAttendanceSession session) {
@@ -346,6 +526,7 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
   bool _requiresGps = false;
   bool _allowLateEntry = false;
   bool _submitting = false;
+  bool _isCancelled = false;
 
   @override
   void initState() {
@@ -594,7 +775,10 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: _submitting ? null : () => Navigator.pop(context, false),
+          onPressed: () {
+            _isCancelled = true;
+            Navigator.of(context).pop(null);
+          },
           child: const Text('Cancel'),
         ),
         FilledButton(
@@ -668,6 +852,8 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
       return;
     }
 
+    if (_isCancelled) return;
+
     setState(() {
       _submitting = true;
     });
@@ -678,6 +864,8 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
       if (_requiresGps) {
         position = await _getTeacherPosition();
       }
+
+      if (!mounted || _isCancelled) return;
 
       final result = await _service.createAttendanceSession(
         courseId: _courseId,
@@ -692,11 +880,11 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
         allowLateEntry: _allowLateEntry,
       );
 
-      if (mounted) {
+      if (mounted && !_isCancelled) {
         Navigator.pop(context, result);
       }
     } on TeacherAcademicServiceException catch (error) {
-      if (!mounted) {
+      if (!mounted || _isCancelled) {
         return;
       }
 
@@ -704,7 +892,7 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
         context,
       ).showSnackBar(SnackBar(content: Text(error.message)));
     } catch (error) {
-      if (!mounted) {
+      if (!mounted || _isCancelled) {
         return;
       }
 
@@ -712,7 +900,7 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
         SnackBar(content: Text('Could not get your current location: $error')),
       );
     } finally {
-      if (mounted) {
+      if (mounted && !_isCancelled) {
         setState(() {
           _submitting = false;
         });
@@ -1294,9 +1482,193 @@ class _EmptyAttendance extends StatelessWidget {
   }
 }
 
+class CourseAttendanceOverview {
+  final TeacherCourse course;
+  final int enrolledStudentsCount;
+  final int finalizedClassesCount;
+  final double averageAttendancePercentage;
+  final List<TeacherAttendanceSession> closedSessions;
+  final List<EnrolledStudent> students;
+  final Map<String, Map<String, String>> matrix;
+
+  const CourseAttendanceOverview({
+    required this.course,
+    required this.enrolledStudentsCount,
+    required this.finalizedClassesCount,
+    required this.averageAttendancePercentage,
+    required this.closedSessions,
+    required this.students,
+    required this.matrix,
+  });
+}
+
+class _CourseAttendanceOverviewCard extends StatelessWidget {
+  final CourseAttendanceOverview overview;
+  final VoidCallback onViewRegister;
+  final VoidCallback onDownloadCsv;
+
+  const _CourseAttendanceOverviewCard({
+    required this.overview,
+    required this.onViewRegister,
+    required this.onDownloadCsv,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(AppSpacing.regular),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.medium),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isNarrow = constraints.maxWidth < 620;
+
+          final details = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(AppRadius.small),
+                    ),
+                    child: Text(
+                      overview.course.code,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.small),
+                  Expanded(
+                    child: Text(
+                      overview.course.name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 16,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              SelectableText(
+                'Course ID: ${overview.course.id}',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textTertiary,
+                ),
+              ),
+              const SizedBox(height: AppSpacing.small),
+              Wrap(
+                spacing: AppSpacing.medium,
+                runSpacing: AppSpacing.small,
+                children: [
+                  _buildStat(
+                    'Finalized Classes',
+                    '${overview.finalizedClassesCount}',
+                  ),
+                  _buildStat(
+                    'Enrolled Students',
+                    '${overview.enrolledStudentsCount}',
+                  ),
+                  _buildStat(
+                    'Avg Attendance',
+                    '${overview.averageAttendancePercentage.toStringAsFixed(1)}%',
+                    color: overview.averageAttendancePercentage >= 75
+                        ? AppColors.success
+                        : (overview.averageAttendancePercentage >= 50
+                              ? AppColors.warning
+                              : AppColors.textPrimary),
+                  ),
+                ],
+              ),
+            ],
+          );
+
+          final actions = Wrap(
+            spacing: AppSpacing.small,
+            runSpacing: AppSpacing.small,
+            children: [
+              OutlinedButton.icon(
+                onPressed: onViewRegister,
+                icon: const Icon(Icons.table_chart_rounded, size: 16),
+                label: const Text('View full register'),
+              ),
+              OutlinedButton.icon(
+                onPressed: onDownloadCsv,
+                icon: const Icon(Icons.download_rounded, size: 16),
+                label: const Text('Download CSV'),
+              ),
+            ],
+          );
+
+          if (isNarrow) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                details,
+                const SizedBox(height: AppSpacing.medium),
+                actions,
+              ],
+            );
+          }
+
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(child: details),
+              const SizedBox(width: AppSpacing.medium),
+              actions,
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildStat(String label, String value, {Color? color}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+        ),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w800,
+            color: color ?? AppColors.textPrimary,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _AttendancePageData {
   final List<TeacherCourse> courses;
   final List<TeacherAttendanceSession> sessions;
+  final List<CourseAttendanceOverview> courseOverviews;
 
-  const _AttendancePageData({required this.courses, required this.sessions});
+  const _AttendancePageData({
+    required this.courses,
+    required this.sessions,
+    required this.courseOverviews,
+  });
 }

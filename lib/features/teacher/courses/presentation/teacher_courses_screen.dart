@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:trackademic/core/services/teacher_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/features/teacher/schedule/presentation/teacher_schedule_screen.dart';
 import 'package:trackademic/features/teacher/students/presentation/teacher_student_record_screen.dart';
 
 class TeacherCoursesScreen extends StatefulWidget {
@@ -205,6 +207,7 @@ class _TeacherCoursesScreenState extends State<TeacherCoursesScreen> {
               for (final course in visibleCourses) ...[
                 _CourseCard(
                   course: course,
+                  onTiming: () => _openCourseTiming(course),
                   onManageStudents: () => _showStudentsDialog(course),
                   onEdit: () => _showEditCourseDialog(course),
                   onArchive: () => _confirmArchiveCourse(course),
@@ -215,6 +218,18 @@ class _TeacherCoursesScreenState extends State<TeacherCoursesScreen> {
             ],
           ),
       ],
+    );
+  }
+
+  void _openCourseTiming(TeacherCourse course) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => Scaffold(
+          appBar: AppBar(title: Text('${course.code} Timing')),
+          body: TeacherScheduleScreen(initialCourseId: course.id),
+        ),
+      ),
     );
   }
 
@@ -351,6 +366,7 @@ class _TeacherCoursesScreenState extends State<TeacherCoursesScreen> {
 
 class _CourseCard extends StatelessWidget {
   final TeacherCourse course;
+  final VoidCallback onTiming;
   final VoidCallback onManageStudents;
   final VoidCallback onEdit;
   final VoidCallback onArchive;
@@ -358,6 +374,7 @@ class _CourseCard extends StatelessWidget {
 
   const _CourseCard({
     required this.course,
+    required this.onTiming,
     required this.onManageStudents,
     required this.onEdit,
     required this.onArchive,
@@ -490,6 +507,114 @@ class _CourseCard extends StatelessWidget {
               ],
             ),
           ],
+          const SizedBox(height: AppSpacing.regular),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.medium,
+              vertical: AppSpacing.small,
+            ),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Wrap(
+              spacing: AppSpacing.large,
+              runSpacing: AppSpacing.small,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Course ID: ',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    Flexible(
+                      child: SelectableText(
+                        course.id,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Copy Course ID',
+                      iconSize: 16,
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.all(4),
+                      constraints: const BoxConstraints(),
+                      icon: const Icon(
+                        Icons.copy_rounded,
+                        color: AppColors.primary,
+                      ),
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: course.id));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Copied Course ID: ${course.id}'),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Join code: ',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    SelectableText(
+                      course.joinCode ?? '-',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Copy Join Code',
+                      iconSize: 16,
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.all(4),
+                      constraints: const BoxConstraints(),
+                      icon: const Icon(
+                        Icons.copy_rounded,
+                        color: AppColors.primary,
+                      ),
+                      onPressed: () {
+                        Clipboard.setData(
+                          ClipboardData(text: course.joinCode ?? ''),
+                        );
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Copied Join code: ${course.joinCode ?? '-'}',
+                            ),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
           const SizedBox(height: AppSpacing.large),
           Align(
             alignment: Alignment.centerRight,
@@ -499,6 +624,11 @@ class _CourseCard extends StatelessWidget {
               runSpacing: AppSpacing.small,
               children: [
                 if (course.isActive) ...[
+                  OutlinedButton.icon(
+                    onPressed: onTiming,
+                    icon: const Icon(Icons.calendar_month_rounded, size: 18),
+                    label: const Text('Timing'),
+                  ),
                   OutlinedButton.icon(
                     onPressed: onManageStudents,
                     icon: const Icon(Icons.group_rounded, size: 18),
@@ -522,6 +652,11 @@ class _CourseCard extends StatelessWidget {
                     ),
                   ),
                 ] else ...[
+                  OutlinedButton.icon(
+                    onPressed: onTiming,
+                    icon: const Icon(Icons.calendar_month_rounded, size: 18),
+                    label: const Text('View timing'),
+                  ),
                   OutlinedButton.icon(
                     onPressed: onManageStudents,
                     icon: const Icon(Icons.group_rounded, size: 18),

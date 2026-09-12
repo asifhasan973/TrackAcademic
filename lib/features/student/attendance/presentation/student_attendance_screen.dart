@@ -1,9 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:trackademic/core/services/academic_service.dart';
 import 'package:trackademic/core/services/student_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/features/student/courses/presentation/student_course_detail_screen.dart';
 
 class StudentAttendanceScreen extends StatefulWidget {
   final String? highlightSessionId;
@@ -17,9 +19,10 @@ class StudentAttendanceScreen extends StatefulWidget {
 
 class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
   static const _service = StudentAcademicService();
+  static const _academicService = AcademicService();
 
   late Stream<List<StudentAttendanceSession>> _sessionsStream;
-  late Future<List<StudentAttendanceRecord>> _recordsFuture;
+  late Future<_StudentAttendanceOverviewData> _overviewFuture;
 
   final Set<String> _submittingSessionIds = <String>{};
   final Set<String> _submittedSessionIds = <String>{};
@@ -30,7 +33,7 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
   void initState() {
     super.initState();
     _sessionsStream = _service.streamActiveSessions();
-    _recordsFuture = _service.loadMyAttendanceRecords();
+    _overviewFuture = _loadOverview();
 
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) {
@@ -42,14 +45,25 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
   void _reload() {
     setState(() {
       _sessionsStream = _service.streamActiveSessions();
-      _recordsFuture = _service.loadMyAttendanceRecords();
+      _overviewFuture = _loadOverview();
     });
   }
 
-  void _reloadRecords() {
-    setState(() {
-      _recordsFuture = _service.loadMyAttendanceRecords();
-    });
+  Future<_StudentAttendanceOverviewData> _loadOverview() async {
+    final courses = await _academicService.loadCurrentCourses();
+    final summaries = await _academicService.loadAttendanceSummaries();
+    final records = await _service.loadMyAttendanceRecords();
+
+    final summaryMap = <String, StudentAttendanceSummary>{};
+    for (final s in summaries) {
+      summaryMap[s.courseId] = s;
+    }
+
+    return _StudentAttendanceOverviewData(
+      courses: courses,
+      summaries: summaryMap,
+      records: records,
+    );
   }
 
   @override
@@ -87,7 +101,7 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
                 ],
               ),
               const Text(
-                'Mark attendance for your enrolled courses.',
+                'Mark attendance for active sessions and tap any course to view details.',
                 style: TextStyle(color: AppColors.textSecondary),
               ),
               const SizedBox(height: AppSpacing.large),
@@ -134,10 +148,11 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
                     );
                   }
 
-                  return FutureBuilder<List<StudentAttendanceRecord>>(
-                    future: _recordsFuture,
-                    builder: (context, recordSnapshot) {
-                      final records = recordSnapshot.data ?? const [];
+                  return FutureBuilder<_StudentAttendanceOverviewData>(
+                    future: _overviewFuture,
+                    builder: (context, overviewSnapshot) {
+                      final records =
+                          overviewSnapshot.data?.records ?? const [];
 
                       return Column(
                         children: [
@@ -169,15 +184,20 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
 
               const SizedBox(height: AppSpacing.extraLarge),
 
-              // Attendance history header
+              // Enrolled Course Cards Section
               const Text(
-                'Attendance history',
+                'Enrolled Courses',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: AppSpacing.extraSmall),
+              const Text(
+                'Tap a course to view detailed attendance history and statistics.',
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
               ),
               const SizedBox(height: AppSpacing.medium),
 
-              FutureBuilder<List<StudentAttendanceRecord>>(
-                future: _recordsFuture,
+              FutureBuilder<_StudentAttendanceOverviewData>(
+                future: _overviewFuture,
                 builder: (context, snapshot) {
                   if (snapshot.connectionState != ConnectionState.done &&
                       !snapshot.hasData) {
@@ -189,53 +209,160 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
 
                   if (snapshot.hasError) {
                     return Text(
-                      'Failed to load history: ${snapshot.error}',
+                      'Failed to load courses: ${snapshot.error}',
                       style: const TextStyle(color: Colors.red),
                     );
                   }
 
-                  final records = snapshot.data ?? const [];
-
-                  if (records.isEmpty) {
+                  final data = snapshot.data!;
+                  if (data.courses.isEmpty) {
                     return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 12),
-                      child: Text(
-                        'No attendance records yet.',
-                        style: TextStyle(color: AppColors.textSecondary),
+                      padding: EdgeInsets.symmetric(vertical: 24),
+                      child: Center(
+                        child: Text(
+                          'You are not enrolled in any course yet.',
+                          style: TextStyle(color: AppColors.textSecondary),
+                        ),
                       ),
                     );
                   }
 
                   return Column(
                     children: [
-                      for (final record in records)
-                        ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          leading: Icon(
-                            record.status == 'present'
-                                ? Icons.check_circle_rounded
-                                : record.status == 'late'
-                                ? Icons.schedule_rounded
-                                : Icons.cancel_rounded,
-                            color: record.status == 'present'
-                                ? AppColors.success
-                                : record.status == 'late'
-                                ? AppColors.warning
-                                : Colors.red,
-                          ),
-                          title: Text(
-                            '${record.courseCode} · ${record.courseName}',
-                            style: const TextStyle(fontWeight: FontWeight.w700),
-                          ),
-                          subtitle: Text(
-                            record.source.isEmpty
-                                ? record.status
-                                : '${record.status} · ${record.source}',
-                          ),
+                      for (final course in data.courses) ...[
+                        _buildCourseAttendanceCard(
+                          course: course,
+                          summary: data.summaries[course.id],
                         ),
+                        const SizedBox(height: AppSpacing.medium),
+                      ],
                     ],
                   );
                 },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCourseAttendanceCard({
+    required AcademicCourse course,
+    required StudentAttendanceSummary? summary,
+  }) {
+    final attended = summary?.attended ?? 0;
+    final total = summary?.total ?? 0;
+    final percentage = summary?.percentage ?? 0.0;
+    final isSafe = percentage >= 75;
+    final progress = total > 0 ? (attended / total).clamp(0.0, 1.0) : 0.0;
+    final progressColor = isSafe ? AppColors.success : AppColors.danger;
+
+    return Material(
+      color: AppColors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.large),
+        side: const BorderSide(color: AppColors.border),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppRadius.large),
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (context) => StudentCourseDetailScreen(
+                courseId: course.id,
+                courseCode: course.code,
+                courseName: course.name,
+                initialTabIndex: 0,
+              ),
+            ),
+          );
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.large),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.informationBackground,
+                      borderRadius: BorderRadius.circular(AppRadius.small),
+                    ),
+                    child: Text(
+                      course.code,
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.medium),
+                  Expanded(
+                    child: Text(
+                      course.name,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    total > 0 ? '${percentage.toStringAsFixed(0)}%' : '—',
+                    style: TextStyle(
+                      color: total > 0
+                          ? progressColor
+                          : AppColors.textSecondary,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  const Icon(
+                    Icons.chevron_right_rounded,
+                    color: AppColors.textTertiary,
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.small),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 6,
+                  backgroundColor: AppColors.border,
+                  valueColor: AlwaysStoppedAnimation(progressColor),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.small),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    total > 0
+                        ? '$attended of $total classes attended'
+                        : 'No attendance records yet',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  if (course.teacherName.isNotEmpty)
+                    Text(
+                      course.teacherName,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textTertiary,
+                      ),
+                    ),
+                ],
               ),
             ],
           ),
@@ -306,7 +433,7 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
         ),
       );
 
-      _reloadRecords();
+      _reload();
     } on StudentAcademicServiceException catch (error) {
       if (!mounted) {
         return;
@@ -326,6 +453,18 @@ class _StudentAttendanceScreenState extends State<StudentAttendanceScreen> {
       }
     }
   }
+}
+
+class _StudentAttendanceOverviewData {
+  final List<AcademicCourse> courses;
+  final Map<String, StudentAttendanceSummary> summaries;
+  final List<StudentAttendanceRecord> records;
+
+  const _StudentAttendanceOverviewData({
+    required this.courses,
+    required this.summaries,
+    required this.records,
+  });
 }
 
 class _SessionCard extends StatelessWidget {
@@ -449,59 +588,50 @@ class _SessionCard extends StatelessWidget {
                   Text(
                     'Requirements: ${requirements.join(", ")}',
                     style: const TextStyle(
-                      color: AppColors.textSecondary,
                       fontSize: 12,
+                      color: AppColors.textTertiary,
                     ),
                   ),
                 ],
               ],
             );
 
-            final Widget actionButton;
-            if (isAlreadySubmitted) {
-              actionButton = FilledButton.icon(
-                onPressed: null,
-                icon: const Icon(Icons.check_circle_rounded, size: 18),
-                label: const Text('Attendance marked'),
-              );
-            } else if (isSubmitting) {
-              actionButton = const FilledButton(
-                onPressed: null,
-                child: SizedBox.square(
-                  dimension: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              );
-            } else if (isExpired) {
-              actionButton = const FilledButton(
-                onPressed: null,
-                child: Text('Session expired'),
-              );
-            } else {
-              actionButton = FilledButton.icon(
-                onPressed: onSubmit,
-                icon: const Icon(Icons.how_to_reg_rounded, size: 18),
-                label: const Text('Mark attendance'),
-              );
-            }
+            final submitButton = FilledButton.icon(
+              onPressed: canSubmit ? onSubmit : null,
+              icon: isSubmitting
+                  ? const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.check_rounded),
+              label: Text(
+                isAlreadySubmitted
+                    ? 'Submitted'
+                    : isSubmitting
+                    ? 'Submitting...'
+                    : 'Submit attendance',
+              ),
+            );
 
             if (isNarrow) {
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   details,
-                  const SizedBox(height: AppSpacing.medium),
-                  actionButton,
+                  const SizedBox(height: AppSpacing.regular),
+                  submitButton,
                 ],
               );
             }
 
             return Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Expanded(child: details),
                 const SizedBox(width: AppSpacing.medium),
-                actionButton,
+                submitButton,
               ],
             );
           },

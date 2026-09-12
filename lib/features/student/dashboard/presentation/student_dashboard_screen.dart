@@ -4,16 +4,17 @@ import 'package:trackademic/core/services/auth_service.dart';
 import 'package:trackademic/core/services/student_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/features/student/courses/presentation/student_course_detail_screen.dart';
 
 class StudentDashboardScreen extends StatefulWidget {
-  final VoidCallback onOpenAttendance;
-  final VoidCallback onOpenMarks;
-  final VoidCallback onOpenSchedule;
+  final VoidCallback? onOpenAttendance;
+  final VoidCallback? onOpenMarks;
+  final VoidCallback? onOpenSchedule;
 
   const StudentDashboardScreen({
-    required this.onOpenAttendance,
-    required this.onOpenMarks,
-    required this.onOpenSchedule,
+    this.onOpenAttendance,
+    this.onOpenMarks,
+    this.onOpenSchedule,
     super.key,
   });
 
@@ -26,253 +27,59 @@ class _StudentDashboardScreenState extends State<StudentDashboardScreen> {
   static const _authService = AuthService();
   static const _studentAcademicService = StudentAcademicService();
 
-  late Future<StudentAcademicOverview> _overviewFuture;
+  late Future<List<ClassScheduleEntry>> _schedulesFuture;
 
   @override
   void initState() {
     super.initState();
-    _overviewFuture = _academicService.loadStudentOverview();
+    _reload();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final user = _authService.currentUser;
-
-    final displayName = user?.displayName?.trim().isNotEmpty == true
-        ? user!.displayName!.trim()
-        : 'Student';
-
-    return FutureBuilder<StudentAcademicOverview>(
-      future: _overviewFuture,
-      builder: (context, snapshot) {
-        return SingleChildScrollView(
-          padding: const EdgeInsets.all(AppSpacing.large),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 1100),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildHeader(displayName),
-                  const SizedBox(height: AppSpacing.large),
-                  const _PrivacyBanner(),
-                  const SizedBox(height: AppSpacing.large),
-                  if (snapshot.connectionState != ConnectionState.done)
-                    const _LoadingCard()
-                  else if (snapshot.hasError)
-                    _ErrorCard(
-                      message: snapshot.error.toString(),
-                      onRetry: _retry,
-                    )
-                  else if (snapshot.hasData) ...[
-                    _buildSummaryCards(snapshot.data!),
-                    const SizedBox(height: AppSpacing.large),
-                    _buildQuickActions(),
-                    const SizedBox(height: AppSpacing.large),
-                    _buildMainContent(snapshot.data!),
-                  ],
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
+  void _reload() {
+    setState(() {
+      _schedulesFuture = _academicService.loadCurrentSchedules();
+    });
   }
 
-  Widget _buildHeader(String displayName) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Welcome back, $displayName',
-          style: const TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: 28,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-        const SizedBox(height: AppSpacing.small),
-        const Text(
-          'Here is your academic overview for today.',
-          style: TextStyle(color: AppColors.textSecondary, fontSize: 15),
-        ),
-      ],
-    );
+  List<ClassScheduleEntry> _getTodaySchedules(
+    List<ClassScheduleEntry> schedules,
+  ) {
+    final now = DateTime.now();
+    final weekday = now.weekday;
+    final dayIndex = weekday == DateTime.sunday ? 0 : weekday;
+
+    final todayList = schedules.where((s) => s.dayIndex == dayIndex).toList();
+    todayList.sort((a, b) => a.startTime.compareTo(b.startTime));
+    return todayList;
   }
 
-  Widget _buildSummaryCards(StudentAcademicOverview overview) {
-    final attendanceValue = overview.totalClasses == 0
-        ? '—'
-        : '${overview.overallAttendance.toStringAsFixed(0)}%';
-
-    final attendanceDetail = overview.totalClasses == 0
-        ? 'No attendance records yet'
-        : '${overview.attendedClasses} of ${overview.totalClasses} classes';
-
-    final attendanceMarksValue = overview.attendance.isEmpty
-        ? '—'
-        : '${overview.averageAttendanceMarks.toStringAsFixed(1)}/10';
-
-    final marksValue = overview.marks.isEmpty
-        ? '—'
-        : '${overview.averageCtPercentage.toStringAsFixed(1)}%';
-
-    final todaySchedules = _todaySchedules(overview.schedules);
-
-    final todayClassesValue = todaySchedules.length.toString();
-
-    final todayDetail = todaySchedules.isEmpty
-        ? 'No classes scheduled today'
-        : 'Next: ${todaySchedules.first.startTime}';
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final double cardWidth;
-
-        if (constraints.maxWidth >= 900) {
-          cardWidth = (constraints.maxWidth - AppSpacing.regular * 3) / 4;
-        } else if (constraints.maxWidth >= 560) {
-          cardWidth = (constraints.maxWidth - AppSpacing.regular) / 2;
-        } else {
-          cardWidth = constraints.maxWidth;
-        }
-
-        return Wrap(
-          spacing: AppSpacing.regular,
-          runSpacing: AppSpacing.regular,
-          children: [
-            SizedBox(
-              width: cardWidth,
-              child: _MetricCard(
-                label: 'Overall attendance',
-                value: attendanceValue,
-                detail: attendanceDetail,
-                icon: Icons.fact_check_rounded,
-                foreground: AppColors.success,
-                background: AppColors.successBackground,
-              ),
-            ),
-            SizedBox(
-              width: cardWidth,
-              child: _MetricCard(
-                label: 'Attendance marks',
-                value: attendanceMarksValue,
-                detail: overview.attendance.isEmpty
-                    ? 'No attendance marks yet'
-                    : 'Average across ${overview.attendance.length} courses',
-                icon: Icons.calculate_rounded,
-                foreground: AppColors.primary,
-                background: AppColors.informationBackground,
-              ),
-            ),
-            SizedBox(
-              width: cardWidth,
-              child: _MetricCard(
-                label: 'CT average',
-                value: marksValue,
-                detail: overview.marks.isEmpty
-                    ? 'No published marks yet'
-                    : '${overview.marks.length} published assessments',
-                icon: Icons.bar_chart_rounded,
-                foreground: AppColors.warning,
-                background: AppColors.warningBackground,
-              ),
-            ),
-            SizedBox(
-              width: cardWidth,
-              child: _MetricCard(
-                label: 'Today’s classes',
-                value: todayClassesValue,
-                detail: todayDetail,
-                icon: Icons.calendar_month_rounded,
-                foreground: AppColors.secondary,
-                background: AppColors.backgroundSoft,
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildQuickActions() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(AppSpacing.large),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.large),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Quick actions',
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: 19,
-              fontWeight: FontWeight.w900,
-            ),
-          ),
-          const SizedBox(height: AppSpacing.regular),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final attendanceButton = OutlinedButton.icon(
-                onPressed: widget.onOpenAttendance,
-                icon: const Icon(Icons.location_on_rounded),
-                label: const Text('Mark attendance'),
-              );
-
-              final marksButton = OutlinedButton.icon(
-                onPressed: widget.onOpenMarks,
-                icon: const Icon(Icons.analytics_rounded),
-                label: const Text('View marks'),
-              );
-
-              final scheduleButton = OutlinedButton.icon(
-                onPressed: widget.onOpenSchedule,
-                icon: const Icon(Icons.calendar_month_rounded),
-                label: const Text('View schedule'),
-              );
-
-              final joinCourseButton = FilledButton.icon(
-                onPressed: _joinCourse,
-                icon: const Icon(Icons.add_rounded),
-                label: const Text('Join course'),
-              );
-
-              if (constraints.maxWidth >= 780) {
-                return Row(
-                  children: [
-                    Expanded(child: attendanceButton),
-                    const SizedBox(width: AppSpacing.small),
-                    Expanded(child: marksButton),
-                    const SizedBox(width: AppSpacing.small),
-                    Expanded(child: scheduleButton),
-                    const SizedBox(width: AppSpacing.small),
-                    Expanded(child: joinCourseButton),
-                  ],
-                );
-              }
-
-              return Column(
-                children: [
-                  SizedBox(width: double.infinity, child: attendanceButton),
-                  const SizedBox(height: AppSpacing.small),
-                  SizedBox(width: double.infinity, child: marksButton),
-                  const SizedBox(height: AppSpacing.small),
-                  SizedBox(width: double.infinity, child: scheduleButton),
-                  const SizedBox(height: AppSpacing.small),
-                  SizedBox(width: double.infinity, child: joinCourseButton),
-                ],
-              );
-            },
-          ),
-        ],
-      ),
-    );
+  String _formatTodayDate(DateTime date) {
+    const weekdays = [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
+    ];
+    const months = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+    final dayName = weekdays[date.weekday - 1];
+    final monthName = months[date.month - 1];
+    return '$dayName, ${date.day} $monthName ${date.year}';
   }
 
   Future<void> _joinCourse() async {
@@ -310,9 +117,7 @@ class _StudentDashboardScreenState extends State<StudentDashboardScreen> {
     try {
       await _studentAcademicService.requestJoinCourse(code);
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -321,11 +126,9 @@ class _StudentDashboardScreenState extends State<StudentDashboardScreen> {
         ),
       );
 
-      _retry();
+      _reload();
     } on StudentAcademicServiceException catch (error) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -336,434 +139,386 @@ class _StudentDashboardScreenState extends State<StudentDashboardScreen> {
     }
   }
 
-  Widget _buildMainContent(StudentAcademicOverview overview) {
-    final attendanceCard = _AttendanceByCourseCard(
-      summaries: overview.attendance,
-    );
+  @override
+  Widget build(BuildContext context) {
+    final user = _authService.currentUser;
+    final displayName = user?.displayName?.trim().isNotEmpty == true
+        ? user!.displayName!.trim()
+        : 'Student';
 
-    final scheduleCard = _TodayScheduleCard(
-      schedules: _todaySchedules(overview.schedules),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(AppSpacing.large),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 850),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header: Greeting + Date + Compact Join Action
+              _buildHeader(displayName),
+              const SizedBox(height: AppSpacing.extraLarge),
+
+              // Section Title
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Today’s Classes',
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Refresh',
+                    onPressed: _reload,
+                    icon: const Icon(Icons.refresh_rounded),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.medium),
+
+              // Today's Class List or Empty State
+              FutureBuilder<List<ClassScheduleEntry>>(
+                future: _schedulesFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting &&
+                      !snapshot.hasData) {
+                    return const Padding(
+                      padding: EdgeInsets.all(AppSpacing.extraLarge),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+
+                  if (snapshot.hasError) {
+                    return _buildErrorState(snapshot.error.toString());
+                  }
+
+                  final schedules = snapshot.data ?? const [];
+                  final todayClasses = _getTodaySchedules(schedules);
+
+                  if (todayClasses.isEmpty) {
+                    return _buildEmptyState();
+                  }
+
+                  return Column(
+                    children: [
+                      for (final entry in todayClasses) ...[
+                        _buildClassCard(entry),
+                        const SizedBox(height: AppSpacing.medium),
+                      ],
+                    ],
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
     );
+  }
+
+  Widget _buildHeader(String displayName) {
+    final todayFormatted = _formatTodayDate(DateTime.now());
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        if (constraints.maxWidth >= 820) {
-          return Row(
+        final isNarrow = constraints.maxWidth < 500;
+
+        final infoColumn = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Welcome back, $displayName',
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 26,
+                fontWeight: FontWeight.w900,
+                letterSpacing: -0.5,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                const Icon(
+                  Icons.calendar_today_rounded,
+                  size: 14,
+                  color: AppColors.textSecondary,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  todayFormatted,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        );
+
+        final joinButton = FilledButton.tonalIcon(
+          onPressed: _joinCourse,
+          icon: const Icon(Icons.add_rounded, size: 18),
+          label: const Text('Join course'),
+        );
+
+        if (isNarrow) {
+          return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(flex: 6, child: attendanceCard),
-              const SizedBox(width: AppSpacing.regular),
-              Expanded(flex: 5, child: scheduleCard),
+              infoColumn,
+              const SizedBox(height: AppSpacing.medium),
+              joinButton,
             ],
           );
         }
 
-        return Column(
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            attendanceCard,
-            const SizedBox(height: AppSpacing.regular),
-            scheduleCard,
+            Expanded(child: infoColumn),
+            joinButton,
           ],
         );
       },
     );
   }
 
-  List<ClassScheduleEntry> _todaySchedules(List<ClassScheduleEntry> schedules) {
-    final weekday = DateTime.now().weekday;
-
-    final dayIndex = weekday == DateTime.sunday ? 0 : weekday;
-
-    final result = schedules
-        .where((schedule) => schedule.dayIndex == dayIndex)
-        .toList();
-
-    result.sort((a, b) => a.startTime.compareTo(b.startTime));
-
-    return result;
-  }
-
-  void _retry() {
-    setState(() {
-      _overviewFuture = _academicService.loadStudentOverview();
-    });
-  }
-}
-
-class _PrivacyBanner extends StatelessWidget {
-  const _PrivacyBanner();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(AppSpacing.regular),
-      decoration: BoxDecoration(
-        color: AppColors.informationBackground,
-        borderRadius: BorderRadius.circular(AppRadius.medium),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: const Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.lock_outline_rounded, color: AppColors.primary),
-          SizedBox(width: AppSpacing.medium),
-          Expanded(
-            child: Text(
-              'Your academic records are private. Only you and '
-              'authorized teachers can view them.',
-              style: TextStyle(color: AppColors.textSecondary, height: 1.45),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MetricCard extends StatelessWidget {
-  final String label;
-  final String value;
-  final String detail;
-  final IconData icon;
-  final Color foreground;
-  final Color background;
-
-  const _MetricCard({
-    required this.label,
-    required this.value,
-    required this.detail,
-    required this.icon,
-    required this.foreground,
-    required this.background,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(AppSpacing.regular),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
+  Widget _buildClassCard(ClassScheduleEntry entry) {
+    return Material(
+      color: AppColors.surface,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppRadius.large),
-        border: Border.all(color: AppColors.border),
+        side: const BorderSide(color: AppColors.border),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 46,
-            height: 46,
-            decoration: BoxDecoration(
-              color: background,
-              borderRadius: BorderRadius.circular(AppRadius.medium),
-            ),
-            child: Icon(icon, color: foreground),
-          ),
-          const SizedBox(height: AppSpacing.medium),
-          Text(
-            value,
-            style: const TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: 23,
-              fontWeight: FontWeight.w900,
-            ),
-          ),
-          const SizedBox(height: AppSpacing.extraSmall),
-          Text(
-            label,
-            style: const TextStyle(
-              color: AppColors.textSecondary,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: AppSpacing.extraSmall),
-          Text(
-            detail,
-            style: const TextStyle(color: AppColors.textTertiary, fontSize: 11),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _AttendanceByCourseCard extends StatelessWidget {
-  final List<StudentAttendanceSummary> summaries;
-
-  const _AttendanceByCourseCard({required this.summaries});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(AppSpacing.large),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
+      child: InkWell(
         borderRadius: BorderRadius.circular(AppRadius.large),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Attendance by course',
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: 20,
-              fontWeight: FontWeight.w900,
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (context) => StudentCourseDetailScreen(
+                courseId: entry.courseId,
+                courseCode: entry.courseCode,
+                courseName: entry.courseName,
+              ),
             ),
-          ),
-          const SizedBox(height: AppSpacing.extraSmall),
-          const Text(
-            'Minimum recommended attendance is 75%.',
-            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
-          ),
-          const SizedBox(height: AppSpacing.regular),
-          if (summaries.isEmpty)
-            const _EmptyState(
-              icon: Icons.fact_check_outlined,
-              message: 'No attendance records are available yet.',
-            )
-          else
-            for (var index = 0; index < summaries.length; index++) ...[
-              _AttendanceRow(summary: summaries[index]),
-              if (index != summaries.length - 1) const Divider(),
-            ],
-        ],
-      ),
-    );
-  }
-}
-
-class _AttendanceRow extends StatelessWidget {
-  final StudentAttendanceSummary summary;
-
-  const _AttendanceRow({required this.summary});
-
-  @override
-  Widget build(BuildContext context) {
-    final isSafe = summary.percentage >= 75;
-
-    final progressColor = isSafe ? AppColors.success : AppColors.danger;
-
-    final progress = (summary.percentage / 100).clamp(0.0, 1.0);
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: AppSpacing.medium),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+          );
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.regular),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
+              // Time pill
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.informationBackground,
+                  borderRadius: BorderRadius.circular(AppRadius.medium),
+                ),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      summary.courseCode,
+                      entry.startTime,
                       style: const TextStyle(
-                        color: AppColors.textPrimary,
+                        color: AppColors.primary,
                         fontWeight: FontWeight.w900,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const Text(
+                      'to',
+                      style: TextStyle(
+                        color: AppColors.textTertiary,
+                        fontSize: 10,
                       ),
                     ),
                     Text(
-                      summary.courseName,
+                      entry.endTime,
                       style: const TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 12,
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
                       ),
                     ),
                   ],
                 ),
               ),
-              Text(
-                '${summary.percentage.toStringAsFixed(0)}%',
-                style: TextStyle(
-                  color: progressColor,
-                  fontWeight: FontWeight.w900,
+
+              const SizedBox(width: AppSpacing.medium),
+
+              // Class Info
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(
+                              AppRadius.small,
+                            ),
+                          ),
+                          child: Text(
+                            entry.courseCode,
+                            style: const TextStyle(
+                              color: AppColors.primary,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        if (entry.classType.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.backgroundSoft,
+                              borderRadius: BorderRadius.circular(
+                                AppRadius.small,
+                              ),
+                              border: Border.all(color: AppColors.border),
+                            ),
+                            child: Text(
+                              entry.classType,
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      entry.courseName,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 4,
+                      children: [
+                        if (entry.room.isNotEmpty)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.meeting_room_outlined,
+                                size: 14,
+                                color: AppColors.textSecondary,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                entry.room,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        if (entry.teacherName.isNotEmpty)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.person_outline_rounded,
+                                size: 14,
+                                color: AppColors.textSecondary,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                entry.teacherName,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
+                            ],
+                          ),
+                      ],
+                    ),
+                  ],
                 ),
+              ),
+
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.textTertiary,
               ),
             ],
           ),
-          const SizedBox(height: AppSpacing.small),
-          LinearProgressIndicator(
-            value: progress,
-            minHeight: 7,
-            color: progressColor,
-            backgroundColor: AppColors.border,
-            borderRadius: BorderRadius.circular(AppRadius.circular),
-          ),
-          const SizedBox(height: AppSpacing.extraSmall),
-          Text(
-            '${summary.attended} of ${summary.total} classes attended',
-            style: const TextStyle(color: AppColors.textTertiary, fontSize: 11),
-          ),
-        ],
+        ),
       ),
     );
   }
-}
 
-class _TodayScheduleCard extends StatelessWidget {
-  final List<ClassScheduleEntry> schedules;
-
-  const _TodayScheduleCard({required this.schedules});
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildEmptyState() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(AppSpacing.large),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.large,
+        vertical: AppSpacing.extraLarge,
+      ),
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(AppRadius.large),
         border: Border.all(color: AppColors.border),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Today’s schedule',
-                  style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ),
-              Icon(Icons.calendar_today_rounded, color: AppColors.primary),
-            ],
+        mainAxisSize: MainAxisSize.min,
+        children: const [
+          Icon(
+            Icons.event_available_outlined,
+            size: 52,
+            color: AppColors.textTertiary,
           ),
-          const SizedBox(height: AppSpacing.regular),
-          if (schedules.isEmpty)
-            const _EmptyState(
-              icon: Icons.event_busy_outlined,
-              message: 'No classes are scheduled for today.',
-            )
-          else
-            for (var index = 0; index < schedules.length; index++) ...[
-              _ScheduleRow(schedule: schedules[index]),
-              if (index != schedules.length - 1) const Divider(),
-            ],
+          SizedBox(height: AppSpacing.medium),
+          Text(
+            'No classes scheduled today',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          SizedBox(height: AppSpacing.small),
+          Text(
+            'Enjoy your day! You have no classes on your schedule for today.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
+          ),
         ],
       ),
     );
   }
-}
 
-class _ScheduleRow extends StatelessWidget {
-  final ClassScheduleEntry schedule;
-
-  const _ScheduleRow({required this.schedule});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: AppSpacing.medium),
-      child: Row(
-        children: [
-          Container(
-            width: 70,
-            padding: const EdgeInsets.symmetric(vertical: AppSpacing.small),
-            decoration: BoxDecoration(
-              color: AppColors.informationBackground,
-              borderRadius: BorderRadius.circular(AppRadius.small),
-            ),
-            child: Text(
-              schedule.startTime,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: AppColors.primary,
-                fontSize: 11,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-          ),
-          const SizedBox(width: AppSpacing.medium),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  schedule.courseCode,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                Text(
-                  '${schedule.courseName} · ${schedule.room}',
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const Icon(Icons.schedule_rounded, color: AppColors.textTertiary),
-        ],
-      ),
-    );
-  }
-}
-
-class _EmptyState extends StatelessWidget {
-  final IconData icon;
-  final String message;
-
-  const _EmptyState({required this.icon, required this.message});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: AppSpacing.extraLarge),
-      child: Center(
-        child: Column(
-          children: [
-            Icon(icon, size: 42, color: AppColors.textTertiary),
-            const SizedBox(height: AppSpacing.medium),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: AppColors.textSecondary),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _LoadingCard extends StatelessWidget {
-  const _LoadingCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(AppSpacing.extraLarge),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.large),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: const Center(child: CircularProgressIndicator()),
-    );
-  }
-}
-
-class _ErrorCard extends StatelessWidget {
-  final String message;
-  final VoidCallback onRetry;
-
-  const _ErrorCard({required this.message, required this.onRetry});
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildErrorState(String error) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(AppSpacing.large),
@@ -781,13 +536,13 @@ class _ErrorCard extends StatelessWidget {
           ),
           const SizedBox(height: AppSpacing.medium),
           Text(
-            message,
+            error,
             textAlign: TextAlign.center,
             style: const TextStyle(color: AppColors.textSecondary),
           ),
           const SizedBox(height: AppSpacing.medium),
           FilledButton.icon(
-            onPressed: onRetry,
+            onPressed: _reload,
             icon: const Icon(Icons.refresh_rounded),
             label: const Text('Retry'),
           ),

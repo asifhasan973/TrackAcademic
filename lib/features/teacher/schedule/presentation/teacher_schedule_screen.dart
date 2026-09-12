@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:trackademic/core/services/teacher_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/features/schedule/presentation/widgets/timetable_calendar.dart';
 
 class TeacherScheduleScreen extends StatefulWidget {
-  const TeacherScheduleScreen({super.key});
+  final String? initialCourseId;
+
+  const TeacherScheduleScreen({this.initialCourseId, super.key});
 
   @override
   State<TeacherScheduleScreen> createState() => _TeacherScheduleScreenState();
@@ -29,6 +32,23 @@ class _TeacherScheduleScreenState extends State<TeacherScheduleScreen> {
     return _SchedulePageData(
       courses: await _service.loadMyCourses(),
       schedules: await _service.loadMySchedules(),
+    );
+  }
+
+  TimetableEntry _toTimetableEntry(TeacherScheduleEntry s) {
+    return TimetableEntry(
+      id: s.id,
+      courseId: s.courseId,
+      courseCode: s.courseCode,
+      courseName: s.courseName,
+      teacherName: _service.currentTeacherName,
+      dayIndex: s.dayIndex,
+      day: s.day,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      room: s.room,
+      classType: s.classType,
+      status: s.status,
     );
   }
 
@@ -59,7 +79,7 @@ class _TeacherScheduleScreenState extends State<TeacherScheduleScreen> {
                               ),
                             ),
                             Text(
-                              'Create and manage your class schedule.',
+                              'Create and manage your class schedule timetable.',
                               style: TextStyle(color: AppColors.textSecondary),
                             ),
                           ],
@@ -80,25 +100,30 @@ class _TeacherScheduleScreenState extends State<TeacherScheduleScreen> {
                     const Center(child: CircularProgressIndicator())
                   else if (snapshot.hasError)
                     Text(snapshot.error.toString())
-                  else if (snapshot.data!.schedules.isEmpty)
-                    const Center(
-                      child: Padding(
-                        padding: EdgeInsets.all(AppSpacing.extraLarge),
-                        child: Text('No classes scheduled yet.'),
-                      ),
-                    )
                   else
-                    for (final schedule in snapshot.data!.schedules) ...[
-                      _ScheduleCard(
-                        schedule: schedule,
-                        onEdit: () => _openEditor(
-                          snapshot.data!.courses,
-                          existing: schedule,
-                        ),
-                        onDelete: () => _delete(schedule),
-                      ),
-                      const SizedBox(height: AppSpacing.regular),
-                    ],
+                    TimetableCalendar(
+                      entries: snapshot.data!.schedules
+                          .map(_toTimetableEntry)
+                          .toList(),
+                      isTeacher: true,
+                      initialCourseId: widget.initialCourseId,
+                      onAddTiming: snapshot.data!.courses.isEmpty
+                          ? null
+                          : () => _openEditor(snapshot.data!.courses),
+                      onEditTiming: (entry) {
+                        final existing = snapshot.data!.schedules.firstWhere(
+                          (s) => s.id == entry.id,
+                        );
+                        _openEditor(snapshot.data!.courses, existing: existing);
+                      },
+                      onDeleteTiming: (entry) {
+                        final existing = snapshot.data!.schedules.firstWhere(
+                          (s) => s.id == entry.id,
+                        );
+                        _delete(existing);
+                      },
+                      onRefresh: () => setState(_reload),
+                    ),
                 ],
               ),
             ),
@@ -111,11 +136,15 @@ class _TeacherScheduleScreenState extends State<TeacherScheduleScreen> {
   Future<void> _openEditor(
     List<TeacherCourse> courses, {
     TeacherScheduleEntry? existing,
+    String? defaultCourseId,
   }) async {
     final changed = await showDialog<bool>(
       context: context,
-      builder: (context) =>
-          _ScheduleEditorDialog(courses: courses, existing: existing),
+      builder: (context) => _ScheduleEditorDialog(
+        courses: courses,
+        existing: existing,
+        defaultCourseId: defaultCourseId ?? widget.initialCourseId,
+      ),
     );
 
     if (changed == true) {
@@ -124,6 +153,30 @@ class _TeacherScheduleScreenState extends State<TeacherScheduleScreen> {
   }
 
   Future<void> _delete(TeacherScheduleEntry schedule) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete scheduled class?'),
+        content: Text(
+          'Delete ${schedule.courseCode} on ${schedule.day} (${schedule.startTime} - ${schedule.endTime})?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
     try {
       await _service.deleteSchedule(schedule.id);
 
@@ -145,8 +198,13 @@ class _TeacherScheduleScreenState extends State<TeacherScheduleScreen> {
 class _ScheduleEditorDialog extends StatefulWidget {
   final List<TeacherCourse> courses;
   final TeacherScheduleEntry? existing;
+  final String? defaultCourseId;
 
-  const _ScheduleEditorDialog({required this.courses, this.existing});
+  const _ScheduleEditorDialog({
+    required this.courses,
+    this.existing,
+    this.defaultCourseId,
+  });
 
   @override
   State<_ScheduleEditorDialog> createState() => _ScheduleEditorDialogState();
@@ -183,7 +241,12 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
 
     final existing = widget.existing;
 
-    _courseId = existing?.courseId ?? widget.courses.first.id;
+    _courseId =
+        existing?.courseId ??
+        (widget.defaultCourseId != null &&
+                widget.courses.any((c) => c.id == widget.defaultCourseId)
+            ? widget.defaultCourseId!
+            : widget.courses.first.id);
 
     _dayIndex = existing?.dayIndex ?? 0;
 
@@ -342,54 +405,6 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
         });
       }
     }
-  }
-}
-
-class _ScheduleCard extends StatelessWidget {
-  final TeacherScheduleEntry schedule;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
-
-  const _ScheduleCard({
-    required this.schedule,
-    required this.onEdit,
-    required this.onDelete,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: AppColors.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.large),
-        side: const BorderSide(color: AppColors.border),
-      ),
-      child: ListTile(
-        leading: const Icon(Icons.calendar_month_rounded),
-        title: Text(
-          '${schedule.day} · ${schedule.startTime}-${schedule.endTime}',
-        ),
-        subtitle: Text(
-          '${schedule.courseCode} · ${schedule.courseName}\n${schedule.classType} · ${schedule.room}',
-        ),
-        isThreeLine: true,
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              tooltip: 'Edit',
-              onPressed: onEdit,
-              icon: const Icon(Icons.edit_outlined),
-            ),
-            IconButton(
-              tooltip: 'Delete',
-              onPressed: onDelete,
-              icon: const Icon(Icons.delete_outline, color: AppColors.danger),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }
 

@@ -133,24 +133,182 @@ async function seedCourseAndActivities({ teacherUser, studentUsers }) {
     courseIds: [courseId],
   }, { merge: true });
 
-  // Create class schedule
-  await db.collection('schedules').doc('demo-schedule-1').set({
-    courseId,
-    courseCode: 'CSE 311',
-    courseName: 'Software Engineering',
-    teacherId: teacherUser.uid,
-    dayIndex: 1,
-    day: 'Monday',
-    startTime: '10:00',
-    endTime: '11:30',
-    room: 'Lab 3',
-    section: 'A',
-    status: 'active',
-    revision: 1,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  }, { merge: true });
-  console.log(`  ✓ Seeded schedule: Monday 10:00 - 11:30 (Lab 3)`);
+  // Create class schedules (multiple days including Saturday/today)
+  const schedules = [
+    {
+      id: 'demo-schedule-1',
+      dayIndex: 1,
+      day: 'Monday',
+      startTime: '10:00',
+      endTime: '11:30',
+      room: 'Lab 3',
+      classType: 'Theory',
+    },
+    {
+      id: 'demo-schedule-2',
+      dayIndex: 3,
+      day: 'Wednesday',
+      startTime: '14:00',
+      endTime: '15:30',
+      room: 'Lab 3',
+      classType: 'Lab',
+    },
+    {
+      id: 'demo-schedule-3',
+      dayIndex: 6,
+      day: 'Saturday',
+      startTime: '11:00',
+      endTime: '12:30',
+      room: 'Room 402',
+      classType: 'Theory',
+    },
+  ];
+
+  for (const sched of schedules) {
+    await db.collection('schedules').doc(sched.id).set({
+      courseId,
+      courseCode: 'CSE 311',
+      courseName: 'Software Engineering',
+      teacherId: teacherUser.uid,
+      teacherName: teacherUser.displayName,
+      dayIndex: sched.dayIndex,
+      day: sched.day,
+      startTime: sched.startTime,
+      endTime: sched.endTime,
+      room: sched.room,
+      classType: sched.classType,
+      section: 'A',
+      status: 'active',
+      revision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }, { merge: true });
+  }
+  console.log(`  ✓ Seeded ${schedules.length} schedules across multiple days (including Saturday/today)`);
+
+  // Seed 3 deterministic closed attendance sessions on recent dates
+  const closedSessions = [
+    {
+      id: 'demo-session-1',
+      sessionNumber: 1,
+      classType: 'Theory',
+      startedAt: new Date('2026-09-03T10:00:00Z'),
+      endsAt: new Date('2026-09-03T11:30:00Z'),
+      closedAt: new Date('2026-09-03T11:35:00Z'),
+      presentCount: 2,
+      absentCount: 0,
+      lateCount: 0,
+    },
+    {
+      id: 'demo-session-2',
+      sessionNumber: 2,
+      classType: 'Lab',
+      startedAt: new Date('2026-09-07T14:00:00Z'),
+      endsAt: new Date('2026-09-07T15:30:00Z'),
+      closedAt: new Date('2026-09-07T15:35:00Z'),
+      presentCount: 0,
+      absentCount: 1,
+      lateCount: 1,
+    },
+    {
+      id: 'demo-session-3',
+      sessionNumber: 3,
+      classType: 'Theory',
+      startedAt: new Date('2026-09-10T10:00:00Z'),
+      endsAt: new Date('2026-09-10T11:30:00Z'),
+      closedAt: new Date('2026-09-10T11:35:00Z'),
+      presentCount: 2,
+      absentCount: 0,
+      lateCount: 0,
+    },
+  ];
+
+  for (const session of closedSessions) {
+    await db.collection('attendanceSessions').doc(session.id).set({
+      courseId,
+      courseCode: 'CSE 311',
+      courseName: 'Software Engineering',
+      teacherId: teacherUser.uid,
+      teacherName: teacherUser.displayName,
+      sessionNumber: session.sessionNumber,
+      classType: session.classType,
+      status: 'closed',
+      requiresPasscode: false,
+      requiresGps: false,
+      presentCount: session.presentCount,
+      absentCount: session.absentCount,
+      lateCount: session.lateCount,
+      startedAt: session.startedAt,
+      endsAt: session.endsAt,
+      closedAt: session.closedAt,
+      createdAt: session.startedAt,
+      updatedAt: session.closedAt,
+    }, { merge: true });
+  }
+  console.log(`  ✓ Seeded 3 deterministic closed attendance sessions`);
+
+  // Attendance records for student1: present, late, present (3/3 attended = 100%)
+  // Attendance records for student2: present, absent, present (2/3 attended = 66.7%)
+  const studentRecords = [
+    {
+      student: studentUsers[0],
+      records: [
+        { sessionId: 'demo-session-1', status: 'present', markedAt: new Date('2026-09-03T10:05:00Z') },
+        { sessionId: 'demo-session-2', status: 'late', markedAt: new Date('2026-09-07T14:20:00Z') },
+        { sessionId: 'demo-session-3', status: 'present', markedAt: new Date('2026-09-10T10:03:00Z') },
+      ],
+      attended: 3,
+      total: 3,
+      percentage: 100.0,
+      attendanceMarks: 10.0,
+    },
+    {
+      student: studentUsers[1],
+      records: [
+        { sessionId: 'demo-session-1', status: 'present', markedAt: new Date('2026-09-03T10:07:00Z') },
+        { sessionId: 'demo-session-2', status: 'absent', markedAt: null },
+        { sessionId: 'demo-session-3', status: 'present', markedAt: new Date('2026-09-10T10:08:00Z') },
+      ],
+      attended: 2,
+      total: 3,
+      percentage: 66.7,
+      attendanceMarks: 6.7,
+    },
+  ];
+
+  for (const sr of studentRecords) {
+    for (const rec of sr.records) {
+      await db.collection('attendanceRecords').doc(`${rec.sessionId}_${sr.student.uid}`).set({
+        sessionId: rec.sessionId,
+        courseId,
+        courseCode: 'CSE 311',
+        courseName: 'Software Engineering',
+        studentId: sr.student.uid,
+        institutionId: sr.student.institutionId,
+        studentName: sr.student.displayName,
+        status: rec.status,
+        markedBy: rec.status === 'absent' ? 'system' : 'student',
+        source: rec.status === 'absent' ? 'finalization' : 'self',
+        markedAt: rec.markedAt,
+        finalizedAt: new Date('2026-09-10T11:35:00Z'),
+        updatedAt: timestamp,
+      }, { merge: true });
+    }
+
+    // Matching attendanceSummaries
+    await db.collection('attendanceSummaries').doc(`${courseId}_${sr.student.uid}`).set({
+      courseId,
+      courseCode: 'CSE 311',
+      courseName: 'Software Engineering',
+      studentId: sr.student.uid,
+      attended: sr.attended,
+      total: sr.total,
+      percentage: sr.percentage,
+      attendanceMarks: sr.attendanceMarks,
+      updatedAt: timestamp,
+    }, { merge: true });
+  }
+  console.log(`  ✓ Seeded attendance records and matching attendanceSummaries for ${studentUsers.length} students`);
 
   // Create a published assessment with marks
   const assessmentId = 'demo-assessment-midterm';

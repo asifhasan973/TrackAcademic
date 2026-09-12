@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:trackademic/core/services/academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/features/student/courses/presentation/student_course_detail_screen.dart';
 
 class StudentMarksScreen extends StatefulWidget {
   final String? highlightAssessmentId;
@@ -44,7 +45,7 @@ class _StudentMarksScreenState extends State<StudentMarksScreen> {
           padding: const EdgeInsets.all(AppSpacing.large),
           child: Center(
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 1050),
+              constraints: const BoxConstraints(maxWidth: 1000),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -64,7 +65,7 @@ class _StudentMarksScreenState extends State<StudentMarksScreen> {
                             ),
                             SizedBox(height: AppSpacing.small),
                             Text(
-                              'Published assessment results from your courses.',
+                              'Published assessment results grouped by course. Tap a course to view details.',
                               style: TextStyle(color: AppColors.textSecondary),
                             ),
                           ],
@@ -80,7 +81,8 @@ class _StudentMarksScreenState extends State<StudentMarksScreen> {
                     ],
                   ),
                   const SizedBox(height: AppSpacing.large),
-                  if (snapshot.connectionState != ConnectionState.done)
+                  if (snapshot.connectionState != ConnectionState.done &&
+                      !snapshot.hasData)
                     const Center(
                       child: Padding(
                         padding: EdgeInsets.all(AppSpacing.extraLarge),
@@ -95,7 +97,7 @@ class _StudentMarksScreenState extends State<StudentMarksScreen> {
                       },
                     )
                   else
-                    _buildMarks(snapshot.data ?? const []),
+                    _buildMarksContent(snapshot.data ?? const []),
                 ],
               ),
             ),
@@ -105,30 +107,30 @@ class _StudentMarksScreenState extends State<StudentMarksScreen> {
     );
   }
 
-  Widget _buildMarks(List<StudentMarkRecord> marks) {
+  Widget _buildMarksContent(List<StudentMarkRecord> marks) {
     if (marks.isEmpty) {
       return const _EmptyCard();
     }
 
     final grouped = <String, List<StudentMarkRecord>>{};
-
     for (final mark in marks) {
       grouped.putIfAbsent(mark.courseId, () => []).add(mark);
     }
 
-    double earned = 0;
-    double possible = 0;
-
+    double totalEarned = 0;
+    double totalPossible = 0;
     for (final mark in marks) {
-      earned += mark.score;
-      possible += mark.maxScore;
+      totalEarned += mark.score;
+      totalPossible += mark.maxScore;
     }
-
-    final overallPercentage = possible <= 0 ? 0.0 : (earned / possible) * 100;
+    final overallPercentage = totalPossible <= 0
+        ? 0.0
+        : (totalEarned / totalPossible) * 100;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Top summary metrics
         LayoutBuilder(
           builder: (context, constraints) {
             final width = constraints.maxWidth >= 650
@@ -160,8 +162,20 @@ class _StudentMarksScreenState extends State<StudentMarksScreen> {
           },
         ),
         const SizedBox(height: AppSpacing.extraLarge),
+
+        const Text(
+          'Courses',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w900,
+            color: AppColors.textPrimary,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.medium),
+
         for (final entry in grouped.entries) ...[
-          _CourseMarksCard(
+          _CourseGroupCard(
+            courseId: entry.key,
             marks: entry.value,
             highlightAssessmentId: widget.highlightAssessmentId,
           ),
@@ -172,45 +186,60 @@ class _StudentMarksScreenState extends State<StudentMarksScreen> {
   }
 }
 
-class _CourseMarksCard extends StatelessWidget {
+class _CourseGroupCard extends StatelessWidget {
+  final String courseId;
   final List<StudentMarkRecord> marks;
   final String? highlightAssessmentId;
 
-  const _CourseMarksCard({required this.marks, this.highlightAssessmentId});
+  const _CourseGroupCard({
+    required this.courseId,
+    required this.marks,
+    this.highlightAssessmentId,
+  });
 
   @override
   Widget build(BuildContext context) {
     final first = marks.first;
 
-    final ordered = [...marks]
-      ..sort(
-        (a, b) => a.assessmentName.toLowerCase().compareTo(
-          b.assessmentName.toLowerCase(),
-        ),
-      );
-
     double earned = 0;
     double possible = 0;
-
-    for (final mark in ordered) {
-      earned += mark.score;
-      possible += mark.maxScore;
+    for (final m in marks) {
+      earned += m.score;
+      possible += m.maxScore;
     }
-
     final percentage = possible <= 0 ? 0.0 : (earned / possible) * 100;
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(AppSpacing.large),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
+    final containsHighlighted =
+        highlightAssessmentId != null &&
+        marks.any((m) => m.assessmentId == highlightAssessmentId);
+
+    return Material(
+      color: AppColors.surface,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppRadius.large),
-        border: Border.all(color: AppColors.border),
+        side: BorderSide(
+          color: containsHighlighted ? AppColors.primary : AppColors.border,
+          width: containsHighlighted ? 2.0 : 1.0,
+        ),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppRadius.large),
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (context) => StudentCourseDetailScreen(
+                courseId: courseId,
+                courseCode: first.courseCode,
+                courseName: first.courseName,
+                initialTabIndex: 1, // Focus Marks tab
+                highlightAssessmentId: highlightAssessmentId,
+              ),
+            ),
+          );
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.large),
+          child: Row(
             children: [
               Container(
                 width: 48,
@@ -229,141 +258,86 @@ class _CourseMarksCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      first.courseCode,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 19,
-                        fontWeight: FontWeight.w900,
-                      ),
+                    Row(
+                      children: [
+                        Text(
+                          first.courseCode,
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        if (containsHighlighted) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.primary,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text(
+                              'UPDATED',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
+                    const SizedBox(height: 2),
                     Text(
                       first.courseName,
-                      style: const TextStyle(color: AppColors.textSecondary),
+                      style: const TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${marks.length} assessment${marks.length == 1 ? '' : 's'} · ${earned.toStringAsFixed(1)} / ${possible.toStringAsFixed(1)} points',
+                      style: const TextStyle(
+                        color: AppColors.textTertiary,
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ),
               ),
-              Text(
-                '${percentage.toStringAsFixed(1)}%',
-                style: const TextStyle(
-                  color: AppColors.primary,
-                  fontSize: 22,
-                  fontWeight: FontWeight.w900,
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
                 ),
+                decoration: BoxDecoration(
+                  color: AppColors.informationBackground,
+                  borderRadius: BorderRadius.circular(AppRadius.small),
+                ),
+                child: Text(
+                  '${percentage.toStringAsFixed(1)}%',
+                  style: const TextStyle(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 15,
+                  ),
+                ),
+              ),
+              const SizedBox(width: AppSpacing.small),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.textTertiary,
               ),
             ],
           ),
-          const SizedBox(height: AppSpacing.large),
-          for (int index = 0; index < ordered.length; index++) ...[
-            _AssessmentRow(
-              mark: ordered[index],
-              isHighlighted:
-                  ordered[index].assessmentId == highlightAssessmentId,
-            ),
-            if (index < ordered.length - 1) const Divider(height: 28),
-          ],
-        ],
+        ),
       ),
     );
-  }
-}
-
-class _AssessmentRow extends StatelessWidget {
-  final StudentMarkRecord mark;
-  final bool isHighlighted;
-
-  const _AssessmentRow({required this.mark, this.isHighlighted = false});
-
-  @override
-  Widget build(BuildContext context) {
-    final percentage = mark.maxScore <= 0
-        ? 0.0
-        : (mark.score / mark.maxScore) * 100;
-
-    final content = Row(
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                mark.assessmentName,
-                style: TextStyle(
-                  color: isHighlighted
-                      ? AppColors.primary
-                      : AppColors.textPrimary,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: AppSpacing.extraSmall),
-              Row(
-                children: [
-                  Text(
-                    '${percentage.toStringAsFixed(1)}%',
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 12,
-                    ),
-                  ),
-                  if (mark.previousScore != null) ...[
-                    const SizedBox(width: AppSpacing.small),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 1,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.amber.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(AppRadius.small),
-                      ),
-                      child: Text(
-                        'Corrected from ${_format(mark.previousScore!)}',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.amber[900],
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ],
-          ),
-        ),
-        Text(
-          '${_format(mark.score)} / ${_format(mark.maxScore)}',
-          style: TextStyle(
-            color: isHighlighted ? AppColors.primary : AppColors.textPrimary,
-            fontSize: 17,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-      ],
-    );
-
-    if (isHighlighted) {
-      return Container(
-        padding: const EdgeInsets.all(AppSpacing.small),
-        decoration: BoxDecoration(
-          color: AppColors.informationBackground,
-          borderRadius: BorderRadius.circular(AppRadius.medium),
-          border: Border.all(color: AppColors.primary),
-        ),
-        child: content,
-      );
-    }
-
-    return content;
-  }
-
-  String _format(double value) {
-    if (value == value.roundToDouble()) {
-      return value.toStringAsFixed(0);
-    }
-
-    return value.toStringAsFixed(1);
   }
 }
 
@@ -390,8 +364,8 @@ class _SummaryCard extends StatelessWidget {
       child: Row(
         children: [
           Container(
-            width: 48,
-            height: 48,
+            width: 44,
+            height: 44,
             decoration: BoxDecoration(
               color: AppColors.informationBackground,
               borderRadius: BorderRadius.circular(AppRadius.medium),
@@ -443,21 +417,13 @@ class _EmptyCard extends StatelessWidget {
       child: const Column(
         children: [
           Icon(
-            Icons.assignment_outlined,
-            size: 50,
+            Icons.assignment_turned_in_outlined,
+            size: 48,
             color: AppColors.textTertiary,
           ),
           SizedBox(height: AppSpacing.medium),
           Text(
-            'No published marks yet.',
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontWeight: FontWeight.w900,
-            ),
-          ),
-          SizedBox(height: AppSpacing.small),
-          Text(
-            'Marks will appear here after a course owner publishes an assessment.',
+            'No marks have been published for your enrolled courses yet.',
             textAlign: TextAlign.center,
             style: TextStyle(color: AppColors.textSecondary),
           ),
@@ -487,11 +453,15 @@ class _ErrorCard extends StatelessWidget {
         children: [
           const Icon(
             Icons.error_outline_rounded,
-            size: 42,
+            size: 44,
             color: AppColors.danger,
           ),
           const SizedBox(height: AppSpacing.medium),
-          Text(message, textAlign: TextAlign.center),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppColors.textSecondary),
+          ),
           const SizedBox(height: AppSpacing.medium),
           FilledButton.icon(
             onPressed: onRetry,

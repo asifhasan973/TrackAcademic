@@ -96,37 +96,70 @@ class _TeacherMarksScreenState extends State<TeacherMarksScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: DropdownButtonFormField<String>(
-                initialValue: data.selectedCourseId,
-                decoration: const InputDecoration(labelText: 'Course'),
-                items: data.courses
-                    .map(
-                      (course) => DropdownMenuItem(
-                        value: course.id,
-                        child: Text('${course.code} · ${course.name}'),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (value) {
-                  if (value == null) {
-                    return;
-                  }
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final isNarrow = constraints.maxWidth < 620;
 
-                  _courseId = value;
-                  _reload();
-                },
-              ),
-            ),
-            const SizedBox(width: AppSpacing.medium),
-            FilledButton.icon(
+            final courseDropdown = DropdownButtonFormField<String>(
+              initialValue: data.selectedCourseId,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: 'Course'),
+              items: data.courses
+                  .map(
+                    (course) => DropdownMenuItem(
+                      value: course.id,
+                      child: Text(
+                        '${course.code} · ${course.name}',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  )
+                  .toList(),
+              selectedItemBuilder: (context) {
+                return data.courses.map((course) {
+                  return Text(
+                    '${course.code} · ${course.name}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  );
+                }).toList();
+              },
+              onChanged: (value) {
+                if (value == null) {
+                  return;
+                }
+
+                _courseId = value;
+                _reload();
+              },
+            );
+
+            final newAssessmentButton = FilledButton.icon(
               onPressed: () => _createAssessment(data.selectedCourseId!),
               icon: const Icon(Icons.add_rounded),
               label: const Text('New assessment'),
-            ),
-          ],
+            );
+
+            if (isNarrow) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  courseDropdown,
+                  const SizedBox(height: AppSpacing.regular),
+                  SizedBox(width: double.infinity, child: newAssessmentButton),
+                ],
+              );
+            }
+
+            return Row(
+              children: [
+                Expanded(child: courseDropdown),
+                const SizedBox(width: AppSpacing.medium),
+                newAssessmentButton,
+              ],
+            );
+          },
         ),
         const SizedBox(height: AppSpacing.large),
         if (data.assessments.isEmpty)
@@ -172,77 +205,84 @@ class _TeacherMarksScreenState extends State<TeacherMarksScreen> {
           title: const Text('Create assessment'),
           content: SizedBox(
             width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Assessment name',
-                    hintText: 'e.g. Class Test 1',
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.medium),
-                DropdownButtonFormField<String>(
-                  initialValue: type,
-                  decoration: const InputDecoration(
-                    labelText: 'Assessment type',
-                  ),
-                  items: const [
-                    DropdownMenuItem(value: 'Quiz', child: Text('Quiz')),
-                    DropdownMenuItem(value: 'Midterm', child: Text('Midterm')),
-                    DropdownMenuItem(
-                      value: 'Final Exam',
-                      child: Text('Final Exam'),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    decoration: const InputDecoration(
+                      labelText: 'Assessment name',
+                      hintText: 'e.g. Class Test 1',
                     ),
-                    DropdownMenuItem(
-                      value: 'Assignment',
-                      child: Text('Assignment'),
-                    ),
-                    DropdownMenuItem(
-                      value: 'Presentation',
-                      child: Text('Presentation'),
-                    ),
-                    DropdownMenuItem(value: 'Other', child: Text('Other')),
-                  ],
-                  onChanged: (val) {
-                    if (val != null) {
-                      setDialogState(() => type = val);
-                    }
-                  },
-                ),
-                const SizedBox(height: AppSpacing.medium),
-                TextField(
-                  controller: maxController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Maximum marks'),
-                ),
-                const SizedBox(height: AppSpacing.medium),
-                TextField(
-                  controller: dateController,
-                  readOnly: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Date (YYYY-MM-DD)',
-                    suffixIcon: Icon(Icons.calendar_today_rounded),
                   ),
-                  onTap: () async {
-                    final picked = await showDatePicker(
-                      context: context,
-                      initialDate: DateTime.now(),
-                      firstDate: DateTime(2000),
-                      lastDate: DateTime(2100),
-                    );
-                    if (picked != null) {
-                      final y = picked.year.toString();
-                      final m = picked.month.toString().padLeft(2, '0');
-                      final d = picked.day.toString().padLeft(2, '0');
-                      setDialogState(() {
-                        dateController.text = '$y-$m-$d';
-                      });
-                    }
-                  },
-                ),
-              ],
+                  const SizedBox(height: AppSpacing.medium),
+                  DropdownButtonFormField<String>(
+                    initialValue: type,
+                    decoration: const InputDecoration(
+                      labelText: 'Assessment type',
+                    ),
+                    items: const [
+                      DropdownMenuItem(value: 'Quiz', child: Text('Quiz')),
+                      DropdownMenuItem(
+                        value: 'Midterm',
+                        child: Text('Midterm'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'Final Exam',
+                        child: Text('Final Exam'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'Assignment',
+                        child: Text('Assignment'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'Presentation',
+                        child: Text('Presentation'),
+                      ),
+                      DropdownMenuItem(value: 'Other', child: Text('Other')),
+                    ],
+                    onChanged: (val) {
+                      if (val != null) {
+                        setDialogState(() => type = val);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: AppSpacing.medium),
+                  TextField(
+                    controller: maxController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Maximum marks',
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.medium),
+                  TextField(
+                    controller: dateController,
+                    readOnly: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Date (YYYY-MM-DD)',
+                      suffixIcon: Icon(Icons.calendar_today_rounded),
+                    ),
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: DateTime.now(),
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime(2100),
+                      );
+                      if (picked != null) {
+                        final y = picked.year.toString();
+                        final m = picked.month.toString().padLeft(2, '0');
+                        final d = picked.day.toString().padLeft(2, '0');
+                        setDialogState(() {
+                          dateController.text = '$y-$m-$d';
+                        });
+                      }
+                    },
+                  ),
+                ],
+              ),
             ),
           ),
           actions: [
@@ -328,78 +368,85 @@ class _TeacherMarksScreenState extends State<TeacherMarksScreen> {
           title: const Text('Edit draft assessment'),
           content: SizedBox(
             width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Assessment name',
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.medium),
-                DropdownButtonFormField<String>(
-                  initialValue: type,
-                  decoration: const InputDecoration(
-                    labelText: 'Assessment type',
-                  ),
-                  items: const [
-                    DropdownMenuItem(value: 'Quiz', child: Text('Quiz')),
-                    DropdownMenuItem(value: 'Midterm', child: Text('Midterm')),
-                    DropdownMenuItem(
-                      value: 'Final Exam',
-                      child: Text('Final Exam'),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    decoration: const InputDecoration(
+                      labelText: 'Assessment name',
                     ),
-                    DropdownMenuItem(
-                      value: 'Assignment',
-                      child: Text('Assignment'),
-                    ),
-                    DropdownMenuItem(
-                      value: 'Presentation',
-                      child: Text('Presentation'),
-                    ),
-                    DropdownMenuItem(value: 'Other', child: Text('Other')),
-                  ],
-                  onChanged: (val) {
-                    if (val != null) {
-                      setDialogState(() => type = val);
-                    }
-                  },
-                ),
-                const SizedBox(height: AppSpacing.medium),
-                TextField(
-                  controller: maxController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Maximum marks'),
-                ),
-                const SizedBox(height: AppSpacing.medium),
-                TextField(
-                  controller: dateController,
-                  readOnly: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Date (YYYY-MM-DD)',
-                    suffixIcon: Icon(Icons.calendar_today_rounded),
                   ),
-                  onTap: () async {
-                    final picked = await showDatePicker(
-                      context: context,
-                      initialDate:
-                          DateTime.tryParse(dateController.text) ??
-                          DateTime.now(),
-                      firstDate: DateTime(2000),
-                      lastDate: DateTime(2100),
-                    );
-                    if (picked != null) {
-                      final y = picked.year.toString();
-                      final m = picked.month.toString().padLeft(2, '0');
-                      final d = picked.day.toString().padLeft(2, '0');
-                      setDialogState(() {
-                        dateController.text = '$y-$m-$d';
-                      });
-                    }
-                  },
-                ),
-              ],
+                  const SizedBox(height: AppSpacing.medium),
+                  DropdownButtonFormField<String>(
+                    initialValue: type,
+                    decoration: const InputDecoration(
+                      labelText: 'Assessment type',
+                    ),
+                    items: const [
+                      DropdownMenuItem(value: 'Quiz', child: Text('Quiz')),
+                      DropdownMenuItem(
+                        value: 'Midterm',
+                        child: Text('Midterm'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'Final Exam',
+                        child: Text('Final Exam'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'Assignment',
+                        child: Text('Assignment'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'Presentation',
+                        child: Text('Presentation'),
+                      ),
+                      DropdownMenuItem(value: 'Other', child: Text('Other')),
+                    ],
+                    onChanged: (val) {
+                      if (val != null) {
+                        setDialogState(() => type = val);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: AppSpacing.medium),
+                  TextField(
+                    controller: maxController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Maximum marks',
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.medium),
+                  TextField(
+                    controller: dateController,
+                    readOnly: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Date (YYYY-MM-DD)',
+                      suffixIcon: Icon(Icons.calendar_today_rounded),
+                    ),
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate:
+                            DateTime.tryParse(dateController.text) ??
+                            DateTime.now(),
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime(2100),
+                      );
+                      if (picked != null) {
+                        final y = picked.year.toString();
+                        final m = picked.month.toString().padLeft(2, '0');
+                        final d = picked.day.toString().padLeft(2, '0');
+                        setDialogState(() {
+                          dateController.text = '$y-$m-$d';
+                        });
+                      }
+                    },
+                  ),
+                ],
+              ),
             ),
           ),
           actions: [

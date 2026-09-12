@@ -106,4 +106,85 @@ abstract final class AttendanceCsvBuilder {
 
     return buffer.toString();
   }
+
+  /// Generates a safe filename for the full course register CSV.
+  static String generateFullRegisterFilename({
+    required String courseCode,
+    DateTime? date,
+  }) {
+    final cleanCode = sanitizeFilenamePart(courseCode.trim());
+    final effectiveDate = date ?? DateTime.now();
+    final dateString =
+        '${effectiveDate.year}-${effectiveDate.month.toString().padLeft(2, '0')}-${effectiveDate.day.toString().padLeft(2, '0')}';
+    return 'attendance_${cleanCode}_full_register_$dateString.csv';
+  }
+
+  /// Builds a complete RFC 4180 CSV document representing the full course register.
+  static String buildFullRegisterCsv({
+    required String courseCode,
+    required String courseName,
+    required List<EnrolledStudent> students,
+    required List<TeacherAttendanceSession> sessions,
+    required Map<String, Map<String, String>> matrix,
+  }) {
+    final buffer = StringBuffer();
+
+    final header = <String>[
+      escapeField('Student Name'),
+      escapeField('Roll/Institution ID'),
+    ];
+
+    for (var i = 0; i < sessions.length; i++) {
+      final s = sessions[i];
+      final dateStr = s.startedAt != null
+          ? '${s.startedAt!.year}-${s.startedAt!.month.toString().padLeft(2, '0')}-${s.startedAt!.day.toString().padLeft(2, '0')}'
+          : '';
+      header.add(escapeField('Class ${i + 1} ($dateStr)'));
+    }
+
+    header.add(escapeField('Attended Classes'));
+    header.add(escapeField('Total Classes'));
+    header.add(escapeField('Attendance Percentage'));
+    buffer.write('${header.join(',')}\r\n');
+
+    final totalClasses = sessions.length;
+
+    for (final student in students) {
+      final studentStatuses = matrix[student.uid] ?? const {};
+      var attended = 0;
+
+      final row = <String>[
+        escapeField(student.displayName),
+        escapeField(student.institutionId),
+      ];
+
+      for (final session in sessions) {
+        final rawStatus = (studentStatuses[session.id] ?? 'absent')
+            .toLowerCase();
+        String displayStatus;
+        if (rawStatus == 'present') {
+          displayStatus = 'Present';
+          attended++;
+        } else if (rawStatus == 'late') {
+          displayStatus = 'Late';
+          attended++;
+        } else {
+          displayStatus = 'Absent';
+        }
+        row.add(escapeField(displayStatus));
+      }
+
+      final percentage = totalClasses > 0
+          ? (attended / totalClasses) * 100
+          : 0.0;
+
+      row.add(escapeField(attended.toString()));
+      row.add(escapeField(totalClasses.toString()));
+      row.add(escapeField('${percentage.toStringAsFixed(1)}%'));
+
+      buffer.write('${row.join(',')}\r\n');
+    }
+
+    return buffer.toString();
+  }
 }

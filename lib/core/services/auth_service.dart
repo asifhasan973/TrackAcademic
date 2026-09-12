@@ -68,8 +68,11 @@ class AuthService {
         );
       }
 
-      if (!user.emailVerified) {
-        await user.sendEmailVerification();
+      await user.reload();
+      final currentUser = _auth.currentUser ?? user;
+
+      if (!currentUser.emailVerified) {
+        await currentUser.sendEmailVerification();
       }
 
       return await loadCurrentProfile();

@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:trackademic/features/authentication/presentation/sign_in_screen.dart';
+import 'package:trackademic/core/firebase/firebase_emulator_config.dart';
 import 'package:trackademic/core/services/auth_service.dart';
 import 'package:trackademic/core/widgets/brand_mark.dart';
+import 'package:trackademic/features/authentication/presentation/sign_in_screen.dart';
 
 class CreateAccountScreen extends StatefulWidget {
   const CreateAccountScreen({super.key});
@@ -120,6 +121,40 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       alignment: Alignment.centerLeft,
                       child: BrandMark(size: 72, borderRadius: 22),
                     ),
+
+                    if (FirebaseEmulatorConfig.enabled) ...[
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFF3CD),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFFFE69C)),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.science_outlined,
+                              size: 18,
+                              color: Color(0xFF997404),
+                            ),
+                            SizedBox(width: 8),
+                            Text(
+                              'Demo mode (Firebase Emulator)',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF997404),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
 
                     const SizedBox(height: 26),
 

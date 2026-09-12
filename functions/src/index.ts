@@ -855,13 +855,15 @@ export const registerUser =
           .doc(institutionId);
 
       let createdUserId: string | null = null;
+      const isEmulator = process.env.FUNCTIONS_EMULATOR === "true";
+      const emailVerified = isEmulator;
 
       try {
         const user = await getAuth().createUser({
           displayName,
           email,
           password,
-          emailVerified: false,
+          emailVerified,
           disabled: false,
         });
 
@@ -920,7 +922,7 @@ export const registerUser =
                 institutionId,
                 role,
                 isActive: true,
-                emailVerified: false,
+                emailVerified,
                 phone: null,
                 photoUrl: null,
                 department: null,
