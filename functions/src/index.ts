@@ -2192,232 +2192,246 @@ export const createSchedule =
         );
       }
 
-      const teacher = await requireActiveTeacher(teacherId, request.auth);
+      try {
+        const teacher = await requireActiveTeacher(teacherId, request.auth);
 
-      const courseId = requiredString(
-        request.data.courseId,
-        "Course ID",
-        1,
-        128,
-      );
-
-      await requireActiveOwnedCourse(
-        teacherId,
-        courseId,
-        request.auth,
-      );
-
-      const dayIndex = validateDayIndex(
-        request.data.dayIndex,
-      );
-
-      const day = deriveDayLabel(dayIndex);
-
-      const startTime = validateTime(
-        request.data.startTime,
-        "Start time",
-      );
-
-      const endTime = validateTime(
-        request.data.endTime,
-        "End time",
-      );
-
-      const startMinutes = timeToMinutes(startTime);
-      const endMinutes = timeToMinutes(endTime);
-
-      if (endMinutes <= startMinutes) {
-        throw new HttpsError(
-          "invalid-argument",
-          "End time must be after start time.",
+        const courseId = requiredString(
+          request.data.courseId,
+          "Course ID",
+          1,
+          128,
         );
-      }
 
-      const room = requiredString(
-        request.data.room,
-        "Room",
-        1,
-        80,
-      );
+        await requireActiveOwnedCourse(
+          teacherId,
+          courseId,
+          request.auth,
+        );
 
-      const classType = requiredString(
-        request.data.classType,
-        "Class type",
-        2,
-        40,
-      );
+        const dayIndex = validateDayIndex(
+          request.data.dayIndex,
+        );
 
-      const normalizedRoom = room.trim().toLowerCase();
-      const normalizedClassType = classType.trim().toLowerCase();
-      const database = getFirestore();
-      const lockRef = database
-        .collection("scheduleLocks")
-        .doc(`${teacherId}_${dayIndex}`);
+        const day = deriveDayLabel(dayIndex);
 
-      return await database.runTransaction(async (transaction) => {
-        // Read conflict lock document inside transaction
-        await transaction.get(lockRef);
+        const startTime = validateTime(
+          request.data.startTime,
+          "Start time",
+        );
 
-        const courseRef = database.collection("courses").doc(courseId);
-        const courseDoc = await transaction.get(courseRef);
-        if (!courseDoc.exists) {
-          throw new HttpsError("not-found", "Course not found.");
-        }
-        const courseData = courseDoc.data()!;
-        if (courseData.teacherId !== teacherId) {
+        const endTime = validateTime(
+          request.data.endTime,
+          "End time",
+        );
+
+        const startMinutes = timeToMinutes(startTime);
+        const endMinutes = timeToMinutes(endTime);
+
+        if (endMinutes <= startMinutes) {
           throw new HttpsError(
-            "permission-denied",
-            "You do not manage this course.",
-          );
-        }
-        if (courseData.isActive !== true) {
-          throw new HttpsError(
-            "failed-precondition",
-            "This course is archived.",
+            "invalid-argument",
+            "End time must be after start time.",
           );
         }
 
-        // Query active schedules taught by this teacher on this dayIndex
-        const teacherSchedulesQuery = database
-          .collection("schedules")
-          .where("teacherId", "==", teacherId)
-          .where("dayIndex", "==", dayIndex);
+        const room = requiredString(
+          request.data.room,
+          "Room",
+          1,
+          80,
+        );
 
-        const existingSnap = await transaction.get(teacherSchedulesQuery);
+        const classType = requiredString(
+          request.data.classType,
+          "Class type",
+          2,
+          40,
+        );
 
-        for (const doc of existingSnap.docs) {
-          const data = doc.data();
-          const docStatus = String(data.status ?? "").toLowerCase();
-          if (INACTIVE_SCHEDULE_STATUSES.has(docStatus)) {
-            continue;
+        const normalizedRoom = room.trim().toLowerCase();
+        const normalizedClassType = classType.trim().toLowerCase();
+        const database = getFirestore();
+        const lockRef = database
+          .collection("scheduleLocks")
+          .doc(`${teacherId}_${dayIndex}`);
+
+        return await database.runTransaction(async (transaction) => {
+          // Read conflict lock document inside transaction
+          await transaction.get(lockRef);
+
+          const courseRef = database.collection("courses").doc(courseId);
+          const courseDoc = await transaction.get(courseRef);
+          if (!courseDoc.exists) {
+            throw new HttpsError("not-found", "Course not found.");
+          }
+          const courseData = courseDoc.data()!;
+          if (courseData.teacherId !== teacherId) {
+            throw new HttpsError(
+              "permission-denied",
+              "You do not manage this course.",
+            );
+          }
+          if (courseData.isActive !== true) {
+            throw new HttpsError(
+              "failed-precondition",
+              "This course is archived.",
+            );
           }
 
-          // Exact duplicate check for the same course
-          if (data.courseId === courseId) {
-            const docRoom =
-              String(data.room ?? "").trim().toLowerCase();
-            const docClassType =
-              String(data.classType ?? "").trim().toLowerCase();
-            if (
-              data.startTime === startTime &&
-              data.endTime === endTime &&
-              docRoom === normalizedRoom &&
-              docClassType === normalizedClassType
-            ) {
+          // Query active schedules taught by this teacher on this dayIndex
+          const teacherSchedulesQuery = database
+            .collection("schedules")
+            .where("teacherId", "==", teacherId)
+            .where("dayIndex", "==", dayIndex);
+
+          const existingSnap = await transaction.get(teacherSchedulesQuery);
+
+          for (const doc of existingSnap.docs) {
+            const data = doc.data();
+            const docStatus = String(data.status ?? "").toLowerCase();
+            if (INACTIVE_SCHEDULE_STATUSES.has(docStatus)) {
+              continue;
+            }
+
+            // Exact duplicate check for the same course
+            if (data.courseId === courseId) {
+              const docRoom =
+                String(data.room ?? "").trim().toLowerCase();
+              const docClassType =
+                String(data.classType ?? "").trim().toLowerCase();
+              if (
+                data.startTime === startTime &&
+                data.endTime === endTime &&
+                docRoom === normalizedRoom &&
+                docClassType === normalizedClassType
+              ) {
+                throw new HttpsError(
+                  "invalid-argument",
+                  "An exact duplicate schedule entry already exists for " +
+                    "this course.",
+                );
+              }
+            }
+
+            // Overlap check for the teacher across all courses
+            const existingStart = timeToMinutes(String(data.startTime));
+            const existingEnd = timeToMinutes(String(data.endTime));
+            if (startMinutes < existingEnd && existingStart < endMinutes) {
+              const conflicting = data.courseCode ?? "another class";
               throw new HttpsError(
                 "invalid-argument",
-                "An exact duplicate schedule entry already exists for " +
-                  "this course.",
+                `Schedule overlaps with ${conflicting} ` +
+                  `(${data.startTime} - ${data.endTime}) on ${day}.`,
               );
             }
           }
 
-          // Overlap check for the teacher across all courses
-          const existingStart = timeToMinutes(String(data.startTime));
-          const existingEnd = timeToMinutes(String(data.endTime));
-          if (startMinutes < existingEnd && existingStart < endMinutes) {
-            const conflicting = data.courseCode ?? "another class";
-            throw new HttpsError(
-              "invalid-argument",
-              `Schedule overlaps with ${conflicting} ` +
-                `(${data.startTime} - ${data.endTime}) on ${day}.`,
-            );
-          }
-        }
-
-        // Read notification recipients before writing
-        const recipientIds = await getCourseNotificationRecipients(
-          database,
-          transaction,
-          courseId,
-          "schedule",
-        );
-
-        const reference = database.collection("schedules").doc();
-        const teacherName =
-          typeof teacher.displayName === "string" ?
-            teacher.displayName :
-            "";
-        const timestamp = FieldValue.serverTimestamp();
-
-        const courseLabel = courseData.name || courseData.code;
-        const timeSlot = `${startTime} - ${endTime}`;
-        const notificationRequests = recipientIds.map((studentId) => ({
-          id: `schedule_create_${reference.id}_1_${studentId}`,
-          payload: {
-            userId: studentId,
-            type: "schedule_created",
-            title: "Class Schedule Created",
-            message:
-              `A new class schedule for ${courseLabel} on ${day} ` +
-              `(${timeSlot}) was created.`,
+          // Read notification recipients before writing
+          const recipientIds = await getCourseNotificationRecipients(
+            database,
+            transaction,
             courseId,
-            entityId: reference.id,
-          },
-        }));
+            "schedule",
+          );
 
-        const notifItems = await prepareNotifications(
-          database,
-          transaction,
-          notificationRequests,
-        );
+          const reference = database.collection("schedules").doc();
+          const teacherName =
+            typeof teacher.displayName === "string" ?
+              teacher.displayName :
+              "";
+          const timestamp = FieldValue.serverTimestamp();
 
-        // ALL READS ARE COMPLETE. COMMENCE WRITES:
-        // Update deterministic schedule lock document
-        transaction.set(
-          lockRef,
-          {
+          const courseLabel = courseData.name || courseData.code;
+          const timeSlot = `${startTime} - ${endTime}`;
+          const notificationRequests = recipientIds.map((studentId) => ({
+            id: `schedule_create_${reference.id}_1_${studentId}`,
+            payload: {
+              userId: studentId,
+              type: "schedule_created",
+              title: "Class Schedule Created",
+              message:
+                `A new class schedule for ${courseLabel} on ${day} ` +
+                `(${timeSlot}) was created.`,
+              courseId,
+              entityId: reference.id,
+            },
+          }));
+
+          const notifItems = await prepareNotifications(
+            database,
+            transaction,
+            notificationRequests,
+          );
+
+          // ALL READS ARE COMPLETE. COMMENCE WRITES:
+          // Update deterministic schedule lock document
+          transaction.set(
+            lockRef,
+            {
+              teacherId,
+              dayIndex,
+              version: FieldValue.increment(1),
+              updatedAt: timestamp,
+            },
+            {merge: true},
+          );
+
+          transaction.create(reference, {
+            courseId,
+            courseCode:
+              typeof courseData.code === "string" ? courseData.code : "",
+            courseName:
+              typeof courseData.name === "string" ? courseData.name : "",
             teacherId,
+            teacherName,
             dayIndex,
-            version: FieldValue.increment(1),
+            day,
+            startTime,
+            endTime,
+            room: room.trim(),
+            classType: classType.trim(),
+            status: "scheduled",
+            revision: 1,
+            createdAt: timestamp,
             updatedAt: timestamp,
-          },
-          {merge: true},
+          });
+
+          const auditRef = database.collection("auditLogs").doc();
+          transaction.create(auditRef, {
+            action: "create_schedule",
+            scheduleId: reference.id,
+            courseId,
+            teacherId,
+            actorId: teacherId,
+            actorRole: "teacher",
+            dayIndex,
+            day,
+            startTime,
+            endTime,
+            room: room.trim(),
+            classType: classType.trim(),
+            createdAt: timestamp,
+          });
+
+          commitNotifications(transaction, notifItems, timestamp);
+
+          return {
+            scheduleId: reference.id,
+          };
+        });
+      } catch (error) {
+        if (error instanceof HttpsError) {
+          throw error;
+        }
+        logger.error("createSchedule unexpected failure", {
+          functionName: "createSchedule",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        throw new HttpsError(
+          "internal",
+          "Could not save this class schedule. Please try again.",
         );
-
-        transaction.create(reference, {
-          courseId,
-          courseCode:
-            typeof courseData.code === "string" ? courseData.code : "",
-          courseName:
-            typeof courseData.name === "string" ? courseData.name : "",
-          teacherId,
-          teacherName,
-          dayIndex,
-          day,
-          startTime,
-          endTime,
-          room: room.trim(),
-          classType: classType.trim(),
-          status: "scheduled",
-          revision: 1,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        });
-
-        const auditRef = database.collection("auditLogs").doc();
-        transaction.create(auditRef, {
-          action: "create_schedule",
-          scheduleId: reference.id,
-          courseId,
-          teacherId,
-          actorId: teacherId,
-          actorRole: "teacher",
-          dayIndex,
-          day,
-          startTime,
-          endTime,
-          room: room.trim(),
-          classType: classType.trim(),
-          createdAt: timestamp,
-        });
-
-        commitNotifications(transaction, notifItems, timestamp);
-
-        return {
-          scheduleId: reference.id,
-        };
-      });
+      }
     },
   );
 
@@ -2436,273 +2450,285 @@ export const updateSchedule =
         );
       }
 
-      await requireActiveTeacher(teacherId, request.auth);
+      try {
+        await requireActiveTeacher(teacherId, request.auth);
 
-      const scheduleId = requiredString(
-        request.data.scheduleId,
-        "Schedule ID",
-        1,
-        128,
-      );
-
-      const courseId = requiredString(
-        request.data.courseId,
-        "Course ID",
-        1,
-        128,
-      );
-
-      await requireActiveOwnedCourse(
-        teacherId,
-        courseId,
-        request.auth,
-      );
-
-      const dayIndex = validateDayIndex(
-        request.data.dayIndex,
-      );
-
-      const day = deriveDayLabel(dayIndex);
-
-      const startTime = validateTime(
-        request.data.startTime,
-        "Start time",
-      );
-
-      const endTime = validateTime(
-        request.data.endTime,
-        "End time",
-      );
-
-      const startMinutes = timeToMinutes(startTime);
-      const endMinutes = timeToMinutes(endTime);
-
-      if (endMinutes <= startMinutes) {
-        throw new HttpsError(
-          "invalid-argument",
-          "End time must be after start time.",
+        const scheduleId = requiredString(
+          request.data.scheduleId,
+          "Schedule ID",
+          1,
+          128,
         );
-      }
 
-      const room = requiredString(
-        request.data.room,
-        "Room",
-        1,
-        80,
-      );
+        const courseId = requiredString(
+          request.data.courseId,
+          "Course ID",
+          1,
+          128,
+        );
 
-      const classType = requiredString(
-        request.data.classType,
-        "Class type",
-        2,
-        40,
-      );
+        await requireActiveOwnedCourse(
+          teacherId,
+          courseId,
+          request.auth,
+        );
 
-      const normalizedRoom = room.trim().toLowerCase();
-      const normalizedClassType = classType.trim().toLowerCase();
-      const database = getFirestore();
-      const reference = database.collection("schedules").doc(scheduleId);
+        const dayIndex = validateDayIndex(
+          request.data.dayIndex,
+        );
 
-      return await database.runTransaction(async (transaction) => {
-        const scheduleDoc = await transaction.get(reference);
-        if (!scheduleDoc.exists || !scheduleDoc.data()) {
+        const day = deriveDayLabel(dayIndex);
+
+        const startTime = validateTime(
+          request.data.startTime,
+          "Start time",
+        );
+
+        const endTime = validateTime(
+          request.data.endTime,
+          "End time",
+        );
+
+        const startMinutes = timeToMinutes(startTime);
+        const endMinutes = timeToMinutes(endTime);
+
+        if (endMinutes <= startMinutes) {
           throw new HttpsError(
-            "not-found",
-            "Schedule not found.",
+            "invalid-argument",
+            "End time must be after start time.",
           );
         }
 
-        const existing = scheduleDoc.data()!;
-        if (existing.teacherId !== teacherId) {
-          throw new HttpsError(
-            "permission-denied",
-            "You do not manage this schedule.",
-          );
-        }
+        const room = requiredString(
+          request.data.room,
+          "Room",
+          1,
+          80,
+        );
 
-        const courseRef = database.collection("courses").doc(courseId);
-        const courseDoc = await transaction.get(courseRef);
-        if (!courseDoc.exists) {
-          throw new HttpsError("not-found", "Course not found.");
-        }
-        const courseData = courseDoc.data()!;
-        if (courseData.teacherId !== teacherId) {
-          throw new HttpsError(
-            "permission-denied",
-            "You do not manage this course.",
-          );
-        }
-        if (courseData.isActive !== true) {
-          throw new HttpsError(
-            "failed-precondition",
-            "This course is archived.",
-          );
-        }
+        const classType = requiredString(
+          request.data.classType,
+          "Class type",
+          2,
+          40,
+        );
 
-        const currentDayIndex = Number(existing.dayIndex);
-        const targetDayIndex = dayIndex;
+        const normalizedRoom = room.trim().toLowerCase();
+        const normalizedClassType = classType.trim().toLowerCase();
+        const database = getFirestore();
+        const reference = database.collection("schedules").doc(scheduleId);
 
-        // Deterministic sorted lock acquisition
-        const lockRefs: FirebaseFirestore.DocumentReference[] = [];
-        if (currentDayIndex === targetDayIndex) {
-          lockRefs.push(
-            database
-              .collection("scheduleLocks")
-              .doc(`${teacherId}_${targetDayIndex}`),
-          );
-        } else {
-          const oldLockId = `${teacherId}_${currentDayIndex}`;
-          const newLockId = `${teacherId}_${targetDayIndex}`;
-          const sortedLockIds = [oldLockId, newLockId].sort();
-          for (const id of sortedLockIds) {
-            lockRefs.push(database.collection("scheduleLocks").doc(id));
-          }
-        }
-
-        // Read all locks in deterministic sorted order
-        for (const lockRef of lockRefs) {
-          await transaction.get(lockRef);
-        }
-
-        const teacherSchedulesQuery = database
-          .collection("schedules")
-          .where("teacherId", "==", teacherId)
-          .where("dayIndex", "==", targetDayIndex);
-
-        const existingSnap = await transaction.get(teacherSchedulesQuery);
-
-        for (const doc of existingSnap.docs) {
-          if (doc.id === scheduleId) {
-            continue; // Exclude current schedule during update!
+        return await database.runTransaction(async (transaction) => {
+          const snapshot = await transaction.get(reference);
+          if (!snapshot.exists) {
+            throw new HttpsError("not-found", "Schedule not found.");
           }
 
-          const data = doc.data();
-          const docStatus = String(data.status ?? "").toLowerCase();
-          if (INACTIVE_SCHEDULE_STATUSES.has(docStatus)) {
-            continue;
+          const existingSchedule = snapshot.data()!;
+          const currentRev =
+            typeof existingSchedule.revision === "number" ?
+              existingSchedule.revision + 1 :
+              1;
+          const originDayIndex =
+            typeof existingSchedule.dayIndex === "number" ?
+              existingSchedule.dayIndex :
+              dayIndex;
+          const targetDayIndex = dayIndex;
+
+          const lockRefOrigin = database
+            .collection("scheduleLocks")
+            .doc(`${teacherId}_${originDayIndex}`);
+          const lockRefTarget = database
+            .collection("scheduleLocks")
+            .doc(`${teacherId}_${targetDayIndex}`);
+
+          // Read lock documents
+          await transaction.get(lockRefOrigin);
+          if (targetDayIndex !== originDayIndex) {
+            await transaction.get(lockRefTarget);
           }
 
-          // Exact duplicate check
-          if (data.courseId === courseId) {
-            const docRoom =
-              String(data.room ?? "").trim().toLowerCase();
-            const docClassType =
-              String(data.classType ?? "").trim().toLowerCase();
-            if (
-              data.startTime === startTime &&
-              data.endTime === endTime &&
-              docRoom === normalizedRoom &&
-              docClassType === normalizedClassType
-            ) {
+          const courseRef = database.collection("courses").doc(courseId);
+          const courseDoc = await transaction.get(courseRef);
+          if (!courseDoc.exists) {
+            throw new HttpsError("not-found", "Course not found.");
+          }
+          const courseData = courseDoc.data()!;
+          if (courseData.teacherId !== teacherId) {
+            throw new HttpsError(
+              "permission-denied",
+              "You do not manage this course.",
+            );
+          }
+          if (courseData.isActive !== true) {
+            throw new HttpsError(
+              "failed-precondition",
+              "This course is archived.",
+            );
+          }
+
+          // Query active schedules taught by this teacher on target dayIndex
+          const teacherSchedulesQuery = database
+            .collection("schedules")
+            .where("teacherId", "==", teacherId)
+            .where("dayIndex", "==", targetDayIndex);
+
+          const existingSnap = await transaction.get(teacherSchedulesQuery);
+
+          for (const doc of existingSnap.docs) {
+            if (doc.id === scheduleId) {
+              continue;
+            }
+
+            const data = doc.data();
+            const docStatus = String(data.status ?? "").toLowerCase();
+            if (INACTIVE_SCHEDULE_STATUSES.has(docStatus)) {
+              continue;
+            }
+
+            // Exact duplicate check
+            if (data.courseId === courseId) {
+              const docRoom =
+                String(data.room ?? "").trim().toLowerCase();
+              const docClassType =
+                String(data.classType ?? "").trim().toLowerCase();
+              if (
+                data.startTime === startTime &&
+                data.endTime === endTime &&
+                docRoom === normalizedRoom &&
+                docClassType === normalizedClassType
+              ) {
+                throw new HttpsError(
+                  "invalid-argument",
+                  "An exact duplicate schedule entry already exists for " +
+                    "this course.",
+                );
+              }
+            }
+
+            // Overlap check
+            const existingStart = timeToMinutes(String(data.startTime));
+            const existingEnd = timeToMinutes(String(data.endTime));
+            if (startMinutes < existingEnd && existingStart < endMinutes) {
+              const conflicting = data.courseCode ?? "another class";
               throw new HttpsError(
                 "invalid-argument",
-                "An exact duplicate schedule entry already exists for " +
-                  "this course.",
+                `Schedule overlaps with ${conflicting} ` +
+                  `(${data.startTime} - ${data.endTime}) on ${day}.`,
               );
             }
           }
 
-          // Overlap check
-          const existingStart = timeToMinutes(String(data.startTime));
-          const existingEnd = timeToMinutes(String(data.endTime));
-          if (startMinutes < existingEnd && existingStart < endMinutes) {
-            const conflicting = data.courseCode ?? "another class";
-            throw new HttpsError(
-              "invalid-argument",
-              `Schedule overlaps with ${conflicting} ` +
-                `(${data.startTime} - ${data.endTime}) on ${day}.`,
-            );
-          }
-        }
-
-        // Read notification recipients before writing
-        const recipientIds = await getCourseNotificationRecipients(
-          database,
-          transaction,
-          courseId,
-          "schedule",
-        );
-
-        const currentRev = (Number(existing.revision) || 0) + 1;
-        const courseLabel = courseData.name || courseData.code;
-        const timeSlot = `${startTime} - ${endTime}`;
-        const notificationRequests = recipientIds.map((studentId) => ({
-          id: `schedule_update_${scheduleId}_${currentRev}_${studentId}`,
-          payload: {
-            userId: studentId,
-            type: "schedule_updated",
-            title: "Class Schedule Updated",
-            message:
-              `The class schedule for ${courseLabel} on ${day} ` +
-              `(${timeSlot}) has been updated.`,
+          // Read notification recipients before writing
+          const recipientIds = await getCourseNotificationRecipients(
+            database,
+            transaction,
             courseId,
-            entityId: scheduleId,
-          },
-        }));
+            "schedule",
+          );
 
-        const notifItems = await prepareNotifications(
-          database,
-          transaction,
-          notificationRequests,
-        );
+          const timestamp = FieldValue.serverTimestamp();
+          const courseLabel = courseData.name || courseData.code;
+          const timeSlot = `${startTime} - ${endTime}`;
+          const notificationRequests = recipientIds.map((studentId) => ({
+            id: `schedule_update_${scheduleId}_${currentRev}_${studentId}`,
+            payload: {
+              userId: studentId,
+              type: "schedule_updated",
+              title: "Class Schedule Updated",
+              message:
+                `The class schedule for ${courseLabel} on ${day} ` +
+                `(${timeSlot}) was updated.`,
+              courseId,
+              entityId: scheduleId,
+            },
+          }));
 
-        // ALL READS ARE COMPLETE. COMMENCE WRITES:
-        const timestamp = FieldValue.serverTimestamp();
+          const notifItems = await prepareNotifications(
+            database,
+            transaction,
+            notificationRequests,
+          );
 
-        // Update all acquired lock documents
-        for (const lockRef of lockRefs) {
+          // ALL READS ARE COMPLETE. COMMENCE WRITES:
           transaction.set(
-            lockRef,
+            lockRefOrigin,
             {
               teacherId,
+              dayIndex: originDayIndex,
               version: FieldValue.increment(1),
               updatedAt: timestamp,
             },
             {merge: true},
           );
+
+          if (targetDayIndex !== originDayIndex) {
+            transaction.set(
+              lockRefTarget,
+              {
+                teacherId,
+                dayIndex: targetDayIndex,
+                version: FieldValue.increment(1),
+                updatedAt: timestamp,
+              },
+              {merge: true},
+            );
+          }
+
+          transaction.update(reference, {
+            courseId,
+            courseCode:
+              typeof courseData.code === "string" ? courseData.code : "",
+            courseName:
+              typeof courseData.name === "string" ? courseData.name : "",
+            dayIndex: targetDayIndex,
+            day,
+            startTime,
+            endTime,
+            room: room.trim(),
+            classType: classType.trim(),
+            revision: currentRev,
+            updatedAt: timestamp,
+          });
+
+          const auditRef = database.collection("auditLogs").doc();
+          transaction.create(auditRef, {
+            action: "update_schedule",
+            scheduleId,
+            courseId,
+            teacherId,
+            actorId: teacherId,
+            actorRole: "teacher",
+            dayIndex: targetDayIndex,
+            day,
+            startTime,
+            endTime,
+            room: room.trim(),
+            classType: classType.trim(),
+            revision: currentRev,
+            createdAt: timestamp,
+          });
+
+          commitNotifications(transaction, notifItems, timestamp);
+
+          return {
+            success: true,
+            scheduleId,
+          };
+        });
+      } catch (error) {
+        if (error instanceof HttpsError) {
+          throw error;
         }
-
-        transaction.update(reference, {
-          courseId,
-          courseCode:
-            typeof courseData.code === "string" ? courseData.code : "",
-          courseName:
-            typeof courseData.name === "string" ? courseData.name : "",
-          dayIndex: targetDayIndex,
-          day,
-          startTime,
-          endTime,
-          room: room.trim(),
-          classType: classType.trim(),
-          revision: currentRev,
-          updatedAt: timestamp,
+        logger.error("updateSchedule unexpected failure", {
+          functionName: "updateSchedule",
+          message: error instanceof Error ? error.message : String(error),
         });
-
-        const auditRef = database.collection("auditLogs").doc();
-        transaction.create(auditRef, {
-          action: "update_schedule",
-          scheduleId,
-          courseId,
-          teacherId,
-          actorId: teacherId,
-          actorRole: "teacher",
-          dayIndex: targetDayIndex,
-          day,
-          startTime,
-          endTime,
-          room: room.trim(),
-          classType: classType.trim(),
-          revision: currentRev,
-          createdAt: timestamp,
-        });
-
-        commitNotifications(transaction, notifItems, timestamp);
-
-        return {
-          success: true,
-          scheduleId,
-        };
-      });
+        throw new HttpsError(
+          "internal",
+          "Could not update this class schedule. Please try again.",
+        );
+      }
     },
   );
 

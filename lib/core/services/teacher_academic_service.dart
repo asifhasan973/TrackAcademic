@@ -616,9 +616,28 @@ class TeacherAcademicService {
 
       return result.data;
     } on FirebaseFunctionsException catch (error) {
-      throw TeacherAcademicServiceException(
-        error.message ?? 'The operation failed.',
-      );
+      final msg = error.message?.trim();
+
+      if (msg == null ||
+          msg.isEmpty ||
+          msg == 'INTERNAL' ||
+          msg.toLowerCase() == 'internal' ||
+          msg.contains('[0]')) {
+        final fallback = (name == 'createSchedule' || name == 'updateSchedule')
+            ? 'Could not save this class. Please try again.'
+            : 'The operation failed. Please try again.';
+        throw TeacherAcademicServiceException(fallback);
+      }
+
+      throw TeacherAcademicServiceException(msg);
+    } catch (error) {
+      if (error is TeacherAcademicServiceException) {
+        rethrow;
+      }
+      final fallback = (name == 'createSchedule' || name == 'updateSchedule')
+          ? 'Could not save this class. Please try again.'
+          : 'The operation failed. Please try again.';
+      throw TeacherAcademicServiceException(fallback);
     }
   }
 }

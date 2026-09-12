@@ -1,6 +1,9 @@
 import { createRequire } from 'module';
 const require = createRequire(process.cwd() + '/functions/package.json');
 
+process.stdout.on('error', (err) => { if (err.code === 'EPIPE' || err.code === 'EIO') return; });
+process.stderr.on('error', (err) => { if (err.code === 'EPIPE' || err.code === 'EIO') return; });
+
 const { initializeApp, getApps } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');

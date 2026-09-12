@@ -150,6 +150,8 @@ class _RoleWorkspaceScreenState extends State<RoleWorkspaceScreen> {
   bool _isSigningOut = false;
   String? _highlightSessionId;
   String? _highlightAssessmentId;
+  String? _targetCourseId;
+  String? _targetRequestId;
 
   @override
   void initState() {
@@ -169,7 +171,10 @@ class _RoleWorkspaceScreenState extends State<RoleWorkspaceScreen> {
     } else if (widget.role == UserRole.teacher && _selectedIndex == 1) {
       content = const TeacherCreateAttendanceScreen();
     } else if (widget.role == UserRole.teacher && _selectedIndex == 2) {
-      content = const TeacherCoursesScreen();
+      content = TeacherCoursesScreen(
+        initialManageCourseId: _targetCourseId,
+        initialRequestId: _targetRequestId,
+      );
     } else if (widget.role == UserRole.teacher && _selectedIndex == 3) {
       content = const TeacherMarksScreen();
     } else if (widget.role == UserRole.teacher && _selectedIndex == 4) {
@@ -345,6 +350,8 @@ class _RoleWorkspaceScreenState extends State<RoleWorkspaceScreen> {
         case NotificationNavigationResult.teacherCourses:
           setState(() {
             _selectedIndex = 2;
+            _targetCourseId = payload.courseId;
+            _targetRequestId = payload.entityId;
           });
           break;
         case NotificationNavigationResult.teacherMarks:
@@ -372,6 +379,8 @@ class _RoleWorkspaceScreenState extends State<RoleWorkspaceScreen> {
       _selectedIndex = index;
       _highlightSessionId = null;
       _highlightAssessmentId = null;
+      _targetCourseId = null;
+      _targetRequestId = null;
     });
   }
 

@@ -5,6 +5,7 @@ import 'package:trackademic/core/services/student_academic_service.dart';
 import 'package:trackademic/core/services/teacher_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/features/teacher/courses/presentation/teacher_courses_screen.dart';
 import 'package:trackademic/features/ui_preview/presentation/role_workspace_screen.dart';
 
 class AccountWorkspaceScreen extends StatefulWidget {
@@ -273,8 +274,9 @@ class _AccountWorkspaceScreenState extends State<AccountWorkspaceScreen> {
   Future<void> _requests(TeacherCourse course) async {
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => _JoinRequestsDialog(
+      builder: (dialogContext) => CourseStudentsDialog(
         course: course,
+        initialTabIndex: 0,
         onChanged: () {
           setState(_reload);
         },
@@ -304,120 +306,6 @@ class _AccountWorkspaceScreenState extends State<AccountWorkspaceScreen> {
         ),
       ),
     );
-  }
-}
-
-class _JoinRequestsDialog extends StatefulWidget {
-  final TeacherCourse course;
-  final VoidCallback onChanged;
-
-  const _JoinRequestsDialog({required this.course, required this.onChanged});
-
-  @override
-  State<_JoinRequestsDialog> createState() => _JoinRequestsDialogState();
-}
-
-class _JoinRequestsDialogState extends State<_JoinRequestsDialog> {
-  static const _service = TeacherAcademicService();
-
-  late Future<List<TeacherJoinRequest>> _future;
-
-  @override
-  void initState() {
-    super.initState();
-    _reload();
-  }
-
-  void _reload() {
-    _future = _service.loadCourseJoinRequests(widget.course.id);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('${widget.course.code} join requests'),
-      content: SizedBox(
-        width: 600,
-        height: 400,
-        child: FutureBuilder<List<TeacherJoinRequest>>(
-          future: _future,
-          builder: (context, snapshot) {
-            if (!snapshot.hasData) {
-              return const Center(child: CircularProgressIndicator());
-            }
-
-            final requests = snapshot.data!;
-
-            if (requests.isEmpty) {
-              return const Center(child: Text('No pending join requests.'));
-            }
-
-            return ListView.separated(
-              itemCount: requests.length,
-              separatorBuilder: (_, _) => const Divider(),
-              itemBuilder: (context, index) {
-                final request = requests[index];
-
-                return ListTile(
-                  title: Text(request.studentName),
-                  subtitle: Text('${request.institutionId}\n${request.email}'),
-                  isThreeLine: true,
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        tooltip: 'Reject',
-                        onPressed: () => _respond(request, false),
-                        icon: const Icon(Icons.close_rounded),
-                      ),
-                      IconButton(
-                        tooltip: 'Approve',
-                        onPressed: () => _respond(request, true),
-                        icon: const Icon(
-                          Icons.check_rounded,
-                          color: AppColors.success,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            );
-          },
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Close'),
-        ),
-      ],
-    );
-  }
-
-  Future<void> _respond(TeacherJoinRequest request, bool approve) async {
-    try {
-      await _service.respondCourseJoinRequest(
-        requestId: request.id,
-        approve: approve,
-      );
-
-      if (!mounted) {
-        return;
-      }
-
-      widget.onChanged();
-
-      setState(_reload);
-    } on TeacherAcademicServiceException catch (error) {
-      if (!mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error.message)));
-    }
   }
 }
 

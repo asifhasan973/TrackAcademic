@@ -7,7 +7,16 @@ import 'package:trackademic/features/teacher/schedule/presentation/teacher_sched
 import 'package:trackademic/features/teacher/students/presentation/teacher_student_record_screen.dart';
 
 class TeacherCoursesScreen extends StatefulWidget {
-  const TeacherCoursesScreen({super.key});
+  final String? initialManageCourseId;
+  final String? initialRequestId;
+  final int? initialTabIndex;
+
+  const TeacherCoursesScreen({
+    this.initialManageCourseId,
+    this.initialRequestId,
+    this.initialTabIndex,
+    super.key,
+  });
 
   @override
   State<TeacherCoursesScreen> createState() => _TeacherCoursesScreenState();
@@ -22,11 +31,41 @@ class _TeacherCoursesScreenState extends State<TeacherCoursesScreen> {
 
   bool _showArchived = false;
   String _searchQuery = '';
+  String? _handledInitialCourseId;
 
   @override
   void initState() {
     super.initState();
     _coursesFuture = _service.loadMyCourses(includeArchived: true);
+    if (widget.initialManageCourseId != null) {
+      _checkAndOpenInitialDialog();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant TeacherCoursesScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialManageCourseId != null &&
+        widget.initialManageCourseId != oldWidget.initialManageCourseId) {
+      _checkAndOpenInitialDialog();
+    }
+  }
+
+  Future<void> _checkAndOpenInitialDialog() async {
+    final courseId = widget.initialManageCourseId;
+    if (courseId == null || _handledInitialCourseId == courseId) return;
+    _handledInitialCourseId = courseId;
+
+    final courses = await _coursesFuture;
+    if (!mounted) return;
+    final course = courses.where((c) => c.id == courseId).firstOrNull;
+    if (course != null) {
+      _showStudentsDialog(
+        course,
+        initialTabIndex: widget.initialTabIndex ?? 0,
+        initialRequestId: widget.initialRequestId,
+      );
+    }
   }
 
   @override
@@ -348,11 +387,20 @@ class _TeacherCoursesScreenState extends State<TeacherCoursesScreen> {
     }
   }
 
-  Future<void> _showStudentsDialog(TeacherCourse course) async {
+  Future<void> _showStudentsDialog(
+    TeacherCourse course, {
+    int initialTabIndex = 0,
+    String? initialRequestId,
+  }) async {
     await showDialog<void>(
       context: context,
       builder: (context) {
-        return _CourseStudentsDialog(course: course);
+        return CourseStudentsDialog(
+          course: course,
+          initialTabIndex: initialTabIndex,
+          initialRequestId: initialRequestId,
+          onChanged: _reload,
+        );
       },
     );
   }
@@ -1040,29 +1088,41 @@ class _EditCourseDialogState extends State<_EditCourseDialog> {
   }
 }
 
-class _CourseStudentsDialog extends StatefulWidget {
+class CourseStudentsDialog extends StatefulWidget {
   final TeacherCourse course;
+  final int initialTabIndex;
+  final String? initialRequestId;
+  final VoidCallback? onChanged;
 
-  const _CourseStudentsDialog({required this.course});
+  const CourseStudentsDialog({
+    required this.course,
+    this.initialTabIndex = 0,
+    this.initialRequestId,
+    this.onChanged,
+    super.key,
+  });
 
   @override
-  State<_CourseStudentsDialog> createState() => _CourseStudentsDialogState();
+  State<CourseStudentsDialog> createState() => _CourseStudentsDialogState();
 }
 
-class _CourseStudentsDialogState extends State<_CourseStudentsDialog> {
+class _CourseStudentsDialogState extends State<CourseStudentsDialog> {
   static const _service = TeacherAcademicService();
 
   final _institutionIdController = TextEditingController();
 
+  late Future<List<TeacherJoinRequest>> _requestsFuture;
   late Future<List<EnrolledStudent>> _studentsFuture;
 
   bool _enrolling = false;
   bool _showInactive = false;
   String? _removingStudentId;
+  String? _processingRequestId;
 
   @override
   void initState() {
     super.initState();
+    _reloadRequests();
     _reloadStudents();
   }
 
@@ -1072,6 +1132,10 @@ class _CourseStudentsDialogState extends State<_CourseStudentsDialog> {
     super.dispose();
   }
 
+  void _reloadRequests() {
+    _requestsFuture = _service.loadCourseJoinRequests(widget.course.id);
+  }
+
   void _reloadStudents() {
     _studentsFuture = _service.loadCourseStudents(
       widget.course.id,
@@ -1079,229 +1143,582 @@ class _CourseStudentsDialogState extends State<_CourseStudentsDialog> {
     );
   }
 
+  Future<void> _respond(TeacherJoinRequest request, bool approve) async {
+    if (!widget.course.isActive && approve) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot approve requests for an archived course.'),
+          backgroundColor: AppColors.warning,
+        ),
+      );
+      return;
+    }
+
+    if (_processingRequestId != null) {
+      return;
+    }
+
+    setState(() {
+      _processingRequestId = request.id;
+    });
+
+    try {
+      await _service.respondCourseJoinRequest(
+        requestId: request.id,
+        approve: approve,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            approve
+                ? '${request.studentName} has been approved.'
+                : '${request.studentName} has been rejected.',
+          ),
+          backgroundColor: approve ? AppColors.success : null,
+        ),
+      );
+
+      widget.onChanged?.call();
+
+      setState(() {
+        _reloadRequests();
+        _reloadStudents();
+      });
+    } on TeacherAcademicServiceException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.message),
+          backgroundColor: AppColors.danger,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _processingRequestId = null;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('${widget.course.code} students'),
-      content: SizedBox(
-        width: 650,
-        height: 500,
-        child: Column(
+    return DefaultTabController(
+      length: 2,
+      initialIndex: widget.initialTabIndex.clamp(0, 1),
+      child: AlertDialog(
+        titlePadding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
+        contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (!widget.course.isActive)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(AppSpacing.medium),
-                margin: const EdgeInsets.only(bottom: AppSpacing.small),
-                decoration: BoxDecoration(
-                  color: AppColors.warningBackground,
-                  borderRadius: BorderRadius.circular(AppRadius.medium),
-                  border: Border.all(
-                    color: AppColors.warning.withValues(alpha: 0.4),
-                  ),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(
-                      Icons.info_outline_rounded,
-                      color: AppColors.warning,
-                      size: 20,
-                    ),
-                    SizedBox(width: AppSpacing.small),
-                    Expanded(
-                      child: Text(
-                        'This course is archived. Enrolling and removing students is disabled.',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: AppColors.textPrimary,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              )
-            else
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _institutionIdController,
-                      textCapitalization: TextCapitalization.characters,
-                      decoration: const InputDecoration(
-                        labelText: 'Student institution ID',
-                        hintText: 'Enter a registered user ID',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: AppSpacing.medium),
-                  FilledButton.icon(
-                    onPressed: _enrolling ? null : _enroll,
-                    icon: const Icon(Icons.person_add_rounded),
-                    label: const Text('Enroll'),
-                  ),
-                ],
-              ),
-            const SizedBox(height: AppSpacing.small),
             Row(
               children: [
-                Checkbox(
-                  value: _showInactive,
-                  onChanged: (val) {
-                    setState(() {
-                      _showInactive = val ?? false;
-                      _reloadStudents();
-                    });
-                  },
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(AppRadius.small),
+                  ),
+                  child: const Icon(
+                    Icons.school_rounded,
+                    color: AppColors.primary,
+                    size: 20,
+                  ),
                 ),
-                const Text(
-                  'Show past / inactive enrollments',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: AppColors.textSecondary,
+                const SizedBox(width: AppSpacing.small),
+                Expanded(
+                  child: Text(
+                    '${widget.course.code} Students',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: AppSpacing.small),
-            Expanded(
-              child: FutureBuilder<List<EnrolledStudent>>(
-                future: _studentsFuture,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState != ConnectionState.done) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
+            const SizedBox(height: AppSpacing.medium),
+            FutureBuilder<List<TeacherJoinRequest>>(
+              future: _requestsFuture,
+              builder: (context, reqSnap) {
+                final pendingCount = reqSnap.hasData ? reqSnap.data!.length : 0;
+                return TabBar(
+                  labelColor: AppColors.primary,
+                  unselectedLabelColor: AppColors.textSecondary,
+                  indicatorColor: AppColors.primary,
+                  indicatorWeight: 3,
+                  tabs: [
+                    Tab(
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Text('Pending requests'),
+                          if (pendingCount > 0) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 7,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: AppColors.primary,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                '$pendingCount',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const Tab(text: 'Enrolled students'),
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 650,
+          height: 520,
+          child: TabBarView(
+            children: [_buildPendingRequestsTab(), _buildEnrolledStudentsTab()],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
 
-                  if (snapshot.hasError) {
-                    return Center(
-                      child: Text(
+  Widget _buildPendingRequestsTab() {
+    return Column(
+      children: [
+        if (!widget.course.isActive)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(AppSpacing.medium),
+            margin: const EdgeInsets.only(top: 8, bottom: 8),
+            decoration: BoxDecoration(
+              color: AppColors.warningBackground,
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: Border.all(
+                color: AppColors.warning.withValues(alpha: 0.4),
+              ),
+            ),
+            child: const Row(
+              children: [
+                Icon(
+                  Icons.info_outline_rounded,
+                  color: AppColors.warning,
+                  size: 20,
+                ),
+                SizedBox(width: AppSpacing.small),
+                Expanded(
+                  child: Text(
+                    'This course is archived. Approving join requests is disabled.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        Expanded(
+          child: FutureBuilder<List<TeacherJoinRequest>>(
+            future: _requestsFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator());
+              }
+
+              if (snapshot.hasError) {
+                return Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
                         snapshot.error.toString(),
                         textAlign: TextAlign.center,
                         style: const TextStyle(color: AppColors.danger),
                       ),
-                    );
-                  }
-
-                  final students = snapshot.data ?? const [];
-
-                  if (students.isEmpty) {
-                    return const Center(
-                      child: Text(
-                        'No students are enrolled in this course yet.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: AppColors.textSecondary),
+                      const SizedBox(height: AppSpacing.medium),
+                      OutlinedButton.icon(
+                        onPressed: () => setState(_reloadRequests),
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('Retry'),
                       ),
-                    );
-                  }
+                    ],
+                  ),
+                );
+              }
 
-                  return ListView.separated(
-                    itemCount: students.length,
-                    separatorBuilder: (_, _) => const Divider(),
-                    itemBuilder: (context, index) {
-                      final student = students[index];
-                      final removing = _removingStudentId == student.uid;
-                      final isEnrolled = student.isActive;
+              final requests = snapshot.data ?? const [];
 
-                      return ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: CircleAvatar(
-                          backgroundColor: isEnrolled
-                              ? AppColors.primary.withValues(alpha: 0.1)
-                              : Colors.amber.withValues(alpha: 0.1),
-                          child: Icon(
-                            Icons.person_rounded,
-                            color: isEnrolled
-                                ? AppColors.primary
-                                : Colors.amber[800],
-                          ),
+              if (requests.isEmpty) {
+                return Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.group_add_outlined,
+                        size: 48,
+                        color: AppColors.textTertiary.withValues(alpha: 0.6),
+                      ),
+                      const SizedBox(height: AppSpacing.small),
+                      const Text(
+                        'No pending join requests.',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textSecondary,
                         ),
-                        title: Row(
-                          children: [
-                            Text(student.displayName),
-                            if (!isEnrolled) ...[
-                              const SizedBox(width: AppSpacing.small),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                  vertical: 2,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.amber.withValues(alpha: 0.15),
-                                  borderRadius: BorderRadius.circular(
-                                    AppRadius.small,
-                                  ),
-                                ),
-                                child: Text(
-                                  'Inactive',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Colors.amber[900],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ],
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              return ListView.separated(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                itemCount: requests.length,
+                separatorBuilder: (_, _) => const Divider(),
+                itemBuilder: (context, index) {
+                  final request = requests[index];
+                  final isProcessing = _processingRequestId == request.id;
+                  final isTarget = widget.initialRequestId == request.id;
+
+                  return Container(
+                    decoration: isTarget
+                        ? BoxDecoration(
+                            color: AppColors.primary.withValues(alpha: 0.05),
+                            borderRadius: BorderRadius.circular(
+                              AppRadius.small,
+                            ),
+                            border: Border.all(
+                              color: AppColors.primary.withValues(alpha: 0.3),
+                            ),
+                          )
+                        : null,
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                      leading: CircleAvatar(
+                        backgroundColor: AppColors.primary.withValues(
+                          alpha: 0.1,
                         ),
-                        subtitle: Text(
-                          '${student.institutionId} · ${student.email}',
+                        child: const Icon(
+                          Icons.person_outline_rounded,
+                          color: AppColors.primary,
                         ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              tooltip: 'View academic record',
-                              icon: const Icon(
-                                Icons.analytics_outlined,
-                                color: AppColors.primary,
-                              ),
-                              onPressed: () {
-                                Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) => TeacherStudentRecordScreen(
-                                      course: widget.course,
-                                      student: student,
+                      ),
+                      title: Text(
+                        request.studentName.isNotEmpty
+                            ? request.studentName
+                            : 'Student',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: Text(
+                        '${request.institutionId} · ${request.email}',
+                      ),
+                      trailing: isProcessing
+                          ? const SizedBox.square(
+                              dimension: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                OutlinedButton.icon(
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: AppColors.danger,
+                                    side: const BorderSide(
+                                      color: AppColors.danger,
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
                                     ),
                                   ),
-                                );
-                              },
+                                  onPressed: _processingRequestId != null
+                                      ? null
+                                      : () => _respond(request, false),
+                                  icon: const Icon(
+                                    Icons.close_rounded,
+                                    size: 16,
+                                  ),
+                                  label: const Text('Reject'),
+                                ),
+                                const SizedBox(width: 8),
+                                FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
+                                    ),
+                                  ),
+                                  onPressed:
+                                      (_processingRequestId != null ||
+                                          !widget.course.isActive)
+                                      ? null
+                                      : () => _respond(request, true),
+                                  icon: const Icon(
+                                    Icons.check_rounded,
+                                    size: 16,
+                                  ),
+                                  label: const Text('Approve'),
+                                ),
+                              ],
                             ),
-                            if (isEnrolled && widget.course.isActive)
-                              IconButton(
-                                tooltip: 'Remove student',
-                                onPressed: removing
-                                    ? null
-                                    : () {
-                                        _confirmRemove(student);
-                                      },
-                                icon: removing
-                                    ? const SizedBox.square(
-                                        dimension: 20,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : const Icon(
-                                        Icons.person_remove_outlined,
-                                        color: AppColors.danger,
-                                      ),
-                              ),
-                          ],
-                        ),
-                      );
-                    },
+                    ),
                   );
                 },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEnrolledStudentsTab() {
+    return Column(
+      children: [
+        if (!widget.course.isActive)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(AppSpacing.medium),
+            margin: const EdgeInsets.only(top: 8, bottom: AppSpacing.small),
+            decoration: BoxDecoration(
+              color: AppColors.warningBackground,
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: Border.all(
+                color: AppColors.warning.withValues(alpha: 0.4),
               ),
+            ),
+            child: const Row(
+              children: [
+                Icon(
+                  Icons.info_outline_rounded,
+                  color: AppColors.warning,
+                  size: 20,
+                ),
+                SizedBox(width: AppSpacing.small),
+                Expanded(
+                  child: Text(
+                    'This course is archived. Enrolling and removing students is disabled.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _institutionIdController,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: const InputDecoration(
+                      labelText: 'Student institution ID',
+                      hintText: 'Enter a registered user ID',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.medium),
+                FilledButton.icon(
+                  onPressed: _enrolling ? null : _enroll,
+                  icon: const Icon(Icons.person_add_rounded),
+                  label: const Text('Enroll'),
+                ),
+              ],
+            ),
+          ),
+        const SizedBox(height: AppSpacing.small),
+        Row(
+          children: [
+            Checkbox(
+              value: _showInactive,
+              onChanged: (val) {
+                setState(() {
+                  _showInactive = val ?? false;
+                  _reloadStudents();
+                });
+              },
+            ),
+            const Text(
+              'Show past / inactive enrollments',
+              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
             ),
           ],
         ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () {
-            Navigator.pop(context);
-          },
-          child: const Text('Close'),
+        const SizedBox(height: AppSpacing.small),
+        Expanded(
+          child: FutureBuilder<List<EnrolledStudent>>(
+            future: _studentsFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator());
+              }
+
+              if (snapshot.hasError) {
+                return Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        snapshot.error.toString(),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: AppColors.danger),
+                      ),
+                      const SizedBox(height: AppSpacing.medium),
+                      OutlinedButton.icon(
+                        onPressed: () => setState(_reloadStudents),
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              final students = snapshot.data ?? const [];
+
+              if (students.isEmpty) {
+                return const Center(
+                  child: Text(
+                    'No students are enrolled in this course yet.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: AppColors.textSecondary),
+                  ),
+                );
+              }
+
+              return ListView.separated(
+                itemCount: students.length,
+                separatorBuilder: (_, _) => const Divider(),
+                itemBuilder: (context, index) {
+                  final student = students[index];
+                  final removing = _removingStudentId == student.uid;
+                  final isEnrolled = student.isActive;
+
+                  return ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: CircleAvatar(
+                      backgroundColor: isEnrolled
+                          ? AppColors.primary.withValues(alpha: 0.1)
+                          : Colors.amber.withValues(alpha: 0.1),
+                      child: Icon(
+                        Icons.person_rounded,
+                        color: isEnrolled
+                            ? AppColors.primary
+                            : Colors.amber[800],
+                      ),
+                    ),
+                    title: Row(
+                      children: [
+                        Text(student.displayName),
+                        if (!isEnrolled) ...[
+                          const SizedBox(width: AppSpacing.small),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.amber.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(
+                                AppRadius.small,
+                              ),
+                            ),
+                            child: Text(
+                              'Inactive',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.amber[900],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    subtitle: Text(
+                      '${student.institutionId} · ${student.email}',
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'View academic record',
+                          icon: const Icon(
+                            Icons.analytics_outlined,
+                            color: AppColors.primary,
+                          ),
+                          onPressed: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => TeacherStudentRecordScreen(
+                                  course: widget.course,
+                                  student: student,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                        if (isEnrolled && widget.course.isActive)
+                          IconButton(
+                            tooltip: 'Remove student',
+                            onPressed: removing
+                                ? null
+                                : () {
+                                    _confirmRemove(student);
+                                  },
+                            icon: removing
+                                ? const SizedBox.square(
+                                    dimension: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(
+                                    Icons.person_remove_outlined,
+                                    color: AppColors.danger,
+                                  ),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              );
+            },
+          ),
         ),
       ],
     );
@@ -1335,6 +1752,7 @@ class _CourseStudentsDialogState extends State<_CourseStudentsDialog> {
       _institutionIdController.clear();
 
       setState(_reloadStudents);
+      widget.onChanged?.call();
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Student enrolled successfully.')),
@@ -1408,6 +1826,7 @@ class _CourseStudentsDialogState extends State<_CourseStudentsDialog> {
       }
 
       setState(_reloadStudents);
+      widget.onChanged?.call();
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

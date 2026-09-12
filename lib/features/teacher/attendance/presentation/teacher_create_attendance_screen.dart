@@ -184,18 +184,22 @@ class _TeacherCreateAttendanceScreenState
         const SizedBox(height: AppSpacing.large),
         const Divider(),
         const SizedBox(height: AppSpacing.large),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Text(
-              'Attendance Sessions',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w900,
-                color: AppColors.textPrimary,
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final title = const FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Attendance Sessions',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                  color: AppColors.textPrimary,
+                ),
               ),
-            ),
-            FilledButton.icon(
+            );
+
+            final createButton = FilledButton.icon(
               onPressed: data.courses.isEmpty
                   ? null
                   : () async {
@@ -218,9 +222,32 @@ class _TeacherCreateAttendanceScreenState
                       }
                     },
               icon: const Icon(Icons.add_rounded),
-              label: const Text('Create attendance session'),
-            ),
-          ],
+              label: const FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text('Create attendance session'),
+              ),
+            );
+
+            if (constraints.maxWidth < 560) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  title,
+                  const SizedBox(height: AppSpacing.medium),
+                  createButton,
+                ],
+              );
+            }
+
+            return Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(child: title),
+                const SizedBox(width: AppSpacing.medium),
+                createButton,
+              ],
+            );
+          },
         ),
         if (data.courses.isEmpty) ...[
           const SizedBox(height: AppSpacing.medium),

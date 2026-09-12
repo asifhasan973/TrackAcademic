@@ -223,17 +223,18 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
     'Saturday',
   ];
 
+  final _formKey = GlobalKey<FormState>();
+
   late String _courseId;
   late int _dayIndex;
   late String _classType;
 
   late final TextEditingController _startController;
-
   late final TextEditingController _endController;
-
   late final TextEditingController _roomController;
 
   bool _submitting = false;
+  bool _userModifiedRoom = false;
 
   @override
   void initState() {
@@ -248,6 +249,11 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
             ? widget.defaultCourseId!
             : widget.courses.first.id);
 
+    final initialCourse = widget.courses.firstWhere(
+      (c) => c.id == _courseId,
+      orElse: () => widget.courses.first,
+    );
+
     _dayIndex = existing?.dayIndex ?? 0;
 
     _classType = existing?.classType ?? 'Theory';
@@ -258,7 +264,9 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
 
     _endController = TextEditingController(text: existing?.endTime ?? '09:50');
 
-    _roomController = TextEditingController(text: existing?.room ?? '');
+    _roomController = TextEditingController(
+      text: existing?.room ?? (initialCourse.room ?? ''),
+    );
   }
 
   @override
@@ -269,80 +277,174 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
     super.dispose();
   }
 
+  int? _parseTimeMinutes(String text) {
+    final match = RegExp(r'^(\d{1,2}):(\d{2})$').firstMatch(text.trim());
+    if (match == null) return null;
+    final hour = int.tryParse(match.group(1)!);
+    final min = int.tryParse(match.group(2)!);
+    if (hour == null ||
+        min == null ||
+        hour < 0 ||
+        hour > 23 ||
+        min < 0 ||
+        min > 59) {
+      return null;
+    }
+    return hour * 60 + min;
+  }
+
+  String _formatTime(String text) {
+    final match = RegExp(r'^(\d{1,2}):(\d{2})$').firstMatch(text.trim());
+    if (match == null) return text.trim();
+    final hour = int.parse(match.group(1)!);
+    final min = int.parse(match.group(2)!);
+    return '${hour.toString().padLeft(2, '0')}:${min.toString().padLeft(2, '0')}';
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.existing == null ? 'Add class' : 'Edit class'),
       content: SizedBox(
         width: 500,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            DropdownButtonFormField<String>(
-              initialValue: _courseId,
-              decoration: const InputDecoration(labelText: 'Course'),
-              items: widget.courses
-                  .map(
-                    (course) => DropdownMenuItem(
-                      value: course.id,
-                      child: Text('${course.code} · ${course.name}'),
+        child: Form(
+          key: _formKey,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<String>(
+                  initialValue: _courseId,
+                  decoration: const InputDecoration(labelText: 'Course'),
+                  items: widget.courses
+                      .map(
+                        (course) => DropdownMenuItem(
+                          value: course.id,
+                          child: Text('${course.code} · ${course.name}'),
+                        ),
+                      )
+                      .toList(),
+                  validator: (val) => val == null || val.isEmpty
+                      ? 'Please select a course'
+                      : null,
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() {
+                        _courseId = value;
+                        if (widget.existing == null && !_userModifiedRoom) {
+                          final selected = widget.courses.firstWhere(
+                            (c) => c.id == value,
+                            orElse: () => widget.courses.first,
+                          );
+                          if (selected.room != null &&
+                              selected.room!.isNotEmpty) {
+                            _roomController.text = selected.room!;
+                          }
+                        }
+                      });
+                    }
+                  },
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                DropdownButtonFormField<int>(
+                  initialValue: _dayIndex,
+                  decoration: const InputDecoration(labelText: 'Day'),
+                  items: List.generate(
+                    _days.length,
+                    (index) => DropdownMenuItem(
+                      value: index,
+                      child: Text(_days[index]),
                     ),
-                  )
-                  .toList(),
-              onChanged: (value) {
-                if (value != null) {
-                  _courseId = value;
-                }
-              },
-            ),
-            const SizedBox(height: AppSpacing.medium),
-            DropdownButtonFormField<int>(
-              initialValue: _dayIndex,
-              decoration: const InputDecoration(labelText: 'Day'),
-              items: List.generate(
-                _days.length,
-                (index) =>
-                    DropdownMenuItem(value: index, child: Text(_days[index])),
-              ),
-              onChanged: (value) {
-                if (value != null) {
-                  _dayIndex = value;
-                }
-              },
-            ),
-            const SizedBox(height: AppSpacing.medium),
-            TextField(
-              controller: _startController,
-              decoration: const InputDecoration(
-                labelText: 'Start time (HH:MM)',
-              ),
-            ),
-            const SizedBox(height: AppSpacing.medium),
-            TextField(
-              controller: _endController,
-              decoration: const InputDecoration(labelText: 'End time (HH:MM)'),
-            ),
-            const SizedBox(height: AppSpacing.medium),
-            TextField(
-              controller: _roomController,
-              decoration: const InputDecoration(labelText: 'Room'),
-            ),
-            const SizedBox(height: AppSpacing.medium),
-            DropdownButtonFormField<String>(
-              initialValue: _classType,
-              decoration: const InputDecoration(labelText: 'Class type'),
-              items: const [
-                DropdownMenuItem(value: 'Theory', child: Text('Theory')),
-                DropdownMenuItem(value: 'Practical', child: Text('Practical')),
-                DropdownMenuItem(value: 'Makeup', child: Text('Makeup')),
+                  ),
+                  validator: (val) =>
+                      val == null ? 'Please select a day' : null,
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() {
+                        _dayIndex = value;
+                      });
+                    }
+                  },
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextFormField(
+                  controller: _startController,
+                  decoration: const InputDecoration(
+                    labelText: 'Start time (HH:MM)',
+                    hintText: '09:00',
+                  ),
+                  validator: (val) {
+                    if (val == null || val.trim().isEmpty) {
+                      return 'Start time is required';
+                    }
+                    if (_parseTimeMinutes(val) == null) {
+                      return 'Enter valid time in HH:mm format (e.g. 09:00)';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextFormField(
+                  controller: _endController,
+                  decoration: const InputDecoration(
+                    labelText: 'End time (HH:MM)',
+                    hintText: '09:50',
+                  ),
+                  validator: (val) {
+                    if (val == null || val.trim().isEmpty) {
+                      return 'End time is required';
+                    }
+                    final endMin = _parseTimeMinutes(val);
+                    if (endMin == null) {
+                      return 'Enter valid time in HH:mm format (e.g. 09:50)';
+                    }
+                    final startMin = _parseTimeMinutes(_startController.text);
+                    if (startMin != null && endMin <= startMin) {
+                      return 'End time must be after start time';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                TextFormField(
+                  controller: _roomController,
+                  decoration: const InputDecoration(labelText: 'Room'),
+                  onChanged: (val) {
+                    _userModifiedRoom = true;
+                  },
+                  validator: (val) {
+                    if (val == null || val.trim().isEmpty) {
+                      return 'Room is required';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: AppSpacing.medium),
+                DropdownButtonFormField<String>(
+                  initialValue: _classType,
+                  decoration: const InputDecoration(labelText: 'Class type'),
+                  items: const [
+                    DropdownMenuItem(value: 'Theory', child: Text('Theory')),
+                    DropdownMenuItem(
+                      value: 'Practical',
+                      child: Text('Practical'),
+                    ),
+                    DropdownMenuItem(value: 'Makeup', child: Text('Makeup')),
+                  ],
+                  validator: (val) => val == null || val.isEmpty
+                      ? 'Please select class type'
+                      : null,
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() {
+                        _classType = value;
+                      });
+                    }
+                  },
+                ),
               ],
-              onChanged: (value) {
-                if (value != null) {
-                  _classType = value;
-                }
-              },
             ),
-          ],
+          ),
         ),
       ),
       actions: [
@@ -359,21 +461,28 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
   }
 
   Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
     setState(() {
       _submitting = true;
     });
 
     try {
       final existing = widget.existing;
+      final startTime = _formatTime(_startController.text);
+      final endTime = _formatTime(_endController.text);
+      final room = _roomController.text.trim();
 
       if (existing == null) {
         await _service.createSchedule(
           courseId: _courseId,
           dayIndex: _dayIndex,
           day: _days[_dayIndex],
-          startTime: _startController.text.trim(),
-          endTime: _endController.text.trim(),
-          room: _roomController.text.trim(),
+          startTime: startTime,
+          endTime: endTime,
+          room: room,
           classType: _classType,
         );
       } else {
@@ -382,9 +491,9 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
           courseId: _courseId,
           dayIndex: _dayIndex,
           day: _days[_dayIndex],
-          startTime: _startController.text.trim(),
-          endTime: _endController.text.trim(),
-          room: _roomController.text.trim(),
+          startTime: startTime,
+          endTime: endTime,
+          room: room,
           classType: _classType,
         );
       }

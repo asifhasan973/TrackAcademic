@@ -290,12 +290,14 @@ service cloud.firestore {
       allow get: if isVerifiedActiveUser() &&
           (
             resource.data.studentId == request.auth.uid ||
+            resource.data.teacherId == request.auth.uid ||
             isCourseTeacher(resource.data.courseId)
           );
 
       allow list: if isVerifiedActiveUser() &&
           (
             resource.data.studentId == request.auth.uid ||
+            resource.data.teacherId == request.auth.uid ||
             isCourseTeacher(resource.data.courseId)
           );
 

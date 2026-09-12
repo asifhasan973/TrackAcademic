@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
@@ -60,6 +61,7 @@ class _TimetableCalendarState extends State<TimetableCalendar> {
   bool _isWeekView = true;
   late DateTime _selectedDate;
   String? _selectedCourseFilter;
+  Timer? _timeUpdateTimer;
 
   static const _daysOfWeek = [
     'Sunday',
@@ -108,6 +110,17 @@ class _TimetableCalendarState extends State<TimetableCalendar> {
     super.initState();
     _selectedDate = DateTime.now();
     _selectedCourseFilter = widget.initialCourseId;
+    _timeUpdateTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timeUpdateTimer?.cancel();
+    super.dispose();
   }
 
   void _goToToday() {
@@ -499,6 +512,40 @@ class _TimetableCalendarState extends State<TimetableCalendar> {
     );
   }
 
+  Widget _buildCurrentTimeIndicator(
+    double top, {
+    double left = 0,
+    double right = 0,
+  }) {
+    const dotSize = 8.0;
+    const lineHeight = 2.0;
+    const indicatorColor = Color(0xFFEA4335);
+
+    return Positioned(
+      key: const ValueKey('current_time_indicator'),
+      top: top - (dotSize / 2),
+      left: left,
+      right: right,
+      child: IgnorePointer(
+        child: Row(
+          children: [
+            Container(
+              width: dotSize,
+              height: dotSize,
+              decoration: const BoxDecoration(
+                color: indicatorColor,
+                shape: BoxShape.circle,
+              ),
+            ),
+            Expanded(
+              child: Container(height: lineHeight, color: indicatorColor),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildDayView(
     List<TimetableEntry> entries,
     int startHour,
@@ -512,6 +559,19 @@ class _TimetableCalendarState extends State<TimetableCalendar> {
     const hourHeight = 64.0;
     final totalHours = endHour - startHour;
     final gridHeight = totalHours * hourHeight;
+
+    final now = DateTime.now();
+    final isSelectedDayToday =
+        _selectedDate.year == now.year &&
+        _selectedDate.month == now.month &&
+        _selectedDate.day == now.day;
+    final currentMinutes = now.hour * 60 + now.minute;
+    final currentTimeTop =
+        (currentMinutes - (startHour * 60)) * (hourHeight / 60.0);
+    final showCurrentTime =
+        isSelectedDayToday &&
+        currentTimeTop >= 0 &&
+        currentTimeTop <= gridHeight;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -578,6 +638,10 @@ class _TimetableCalendarState extends State<TimetableCalendar> {
                   else
                     for (final entry in dayEntries)
                       _buildPositionedBlock(entry, startHour, hourHeight, 0, 1),
+
+                  // Current time line indicator (today only)
+                  if (showCurrentTime)
+                    _buildCurrentTimeIndicator(currentTimeTop),
                 ],
               ),
             ),
@@ -662,42 +726,62 @@ class _TimetableCalendarState extends State<TimetableCalendar> {
 
                   // 7 Day columns
                   for (var dayIdx = 0; dayIdx < 7; dayIdx++) ...[
-                    Container(
-                      width: colWidth,
-                      height: gridHeight,
-                      decoration: BoxDecoration(
-                        border: const Border(
-                          left: BorderSide(color: AppColors.border),
-                        ),
-                        color:
-                            (weekDates[dayIdx].year == now.year &&
-                                weekDates[dayIdx].month == now.month &&
-                                weekDates[dayIdx].day == now.day)
-                            ? AppColors.primary.withValues(alpha: 0.03)
-                            : null,
-                      ),
-                      child: Stack(
-                        children: [
-                          // Horizontal hour dividers
-                          for (var i = 0; i <= totalHours; i++)
-                            Positioned(
-                              top: i * hourHeight,
-                              left: 0,
-                              right: 0,
-                              child: const Divider(
-                                height: 1,
-                                color: AppColors.border,
-                              ),
-                            ),
+                    Builder(
+                      builder: (context) {
+                        final isColumnToday =
+                            weekDates[dayIdx].year == now.year &&
+                            weekDates[dayIdx].month == now.month &&
+                            weekDates[dayIdx].day == now.day;
+                        final currentMinutes = now.hour * 60 + now.minute;
+                        final currentTimeTop =
+                            (currentMinutes - (startHour * 60)) *
+                            (hourHeight / 60.0);
+                        final showCurrentTime =
+                            isColumnToday &&
+                            currentTimeTop >= 0 &&
+                            currentTimeTop <= gridHeight;
 
-                          // Positioned event cards for this day
-                          ..._buildDayColumnBlocks(
-                            entries.where((e) => e.dayIndex == dayIdx).toList(),
-                            startHour,
-                            hourHeight,
+                        return Container(
+                          width: colWidth,
+                          height: gridHeight,
+                          decoration: BoxDecoration(
+                            border: const Border(
+                              left: BorderSide(color: AppColors.border),
+                            ),
+                            color: isColumnToday
+                                ? AppColors.primary.withValues(alpha: 0.03)
+                                : null,
                           ),
-                        ],
-                      ),
+                          child: Stack(
+                            children: [
+                              // Horizontal hour dividers
+                              for (var i = 0; i <= totalHours; i++)
+                                Positioned(
+                                  top: i * hourHeight,
+                                  left: 0,
+                                  right: 0,
+                                  child: const Divider(
+                                    height: 1,
+                                    color: AppColors.border,
+                                  ),
+                                ),
+
+                              // Positioned event cards for this day
+                              ..._buildDayColumnBlocks(
+                                entries
+                                    .where((e) => e.dayIndex == dayIdx)
+                                    .toList(),
+                                startHour,
+                                hourHeight,
+                              ),
+
+                              // Current-time line indicator (today column only)
+                              if (showCurrentTime)
+                                _buildCurrentTimeIndicator(currentTimeTop),
+                            ],
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ],
