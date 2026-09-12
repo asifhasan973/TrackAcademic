@@ -122,8 +122,16 @@ async function seedCourseAndActivities({ teacherUser, studentUsers }) {
       status: 'active',
       enrolledAt: timestamp,
     }, { merge: true });
+
+    await db.collection('users').doc(student.uid).set({
+      courseIds: [courseId],
+    }, { merge: true });
   }
-  console.log(`  ✓ Enrolled ${studentUsers.length} students in CSE 311`);
+  console.log(`  ✓ Enrolled ${studentUsers.length} students in CSE 311 (updated user courseIds)`);
+
+  await db.collection('users').doc(teacherUser.uid).set({
+    courseIds: [courseId],
+  }, { merge: true });
 
   // Create class schedule
   await db.collection('schedules').doc('demo-schedule-1').set({
@@ -148,11 +156,14 @@ async function seedCourseAndActivities({ teacherUser, studentUsers }) {
   const assessmentId = 'demo-assessment-midterm';
   await db.collection('assessments').doc(assessmentId).set({
     courseId,
-    assessmentName: 'Midterm Exam',
-    assessmentType: 'Midterm',
-    assessmentDate: '2026-09-20',
+    courseCode: 'CSE 311',
+    courseName: 'Software Engineering',
+    name: 'Midterm Exam',
+    type: 'Midterm',
+    date: '2026-09-20',
+    status: 'published',
+    teacherId: teacherUser.uid,
     maxScore: 30,
-    published: true,
     publishedAt: timestamp,
     revision: 1,
     createdAt: timestamp,
@@ -164,7 +175,10 @@ async function seedCourseAndActivities({ teacherUser, studentUsers }) {
     const score = 25 + i * 2;
     await db.collection('marks').doc(`${assessmentId}_${s.uid}`).set({
       assessmentId,
+      assessmentName: 'Midterm Exam',
       courseId,
+      courseCode: 'CSE 311',
+      courseName: 'Software Engineering',
       studentId: s.uid,
       institutionId: s.institutionId,
       studentName: s.displayName,

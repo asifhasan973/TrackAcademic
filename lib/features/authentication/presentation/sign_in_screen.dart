@@ -1,8 +1,7 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:trackademic/core/theme/app_dimensions.dart';
-import 'package:trackademic/features/ui_preview/presentation/role_preview_screen.dart';
 import 'package:trackademic/core/services/auth_service.dart';
+import 'package:trackademic/core/widgets/brand_mark.dart';
+import 'package:trackademic/features/authentication/presentation/create_account_screen.dart';
 
 class SignInScreen extends StatefulWidget {
   const SignInScreen({super.key});
@@ -137,23 +136,9 @@ class _SignInScreenState extends State<SignInScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Align(
+                    const Align(
                       alignment: Alignment.centerLeft,
-                      child: Container(
-                        width: 72,
-                        height: 72,
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            colors: [Color(0xFF3454D1), Color(0xFF6D5CE7)],
-                          ),
-                          borderRadius: BorderRadius.circular(22),
-                        ),
-                        child: const Icon(
-                          Icons.school_rounded,
-                          size: 38,
-                          color: Colors.white,
-                        ),
-                      ),
+                      child: BrandMark(size: 72, borderRadius: 22),
                     ),
 
                     const SizedBox(height: 28),
@@ -171,7 +156,7 @@ class _SignInScreenState extends State<SignInScreen> {
                     const SizedBox(height: 10),
 
                     const Text(
-                      'Sign in using your registered Trackademic account. '
+                      'Sign in using your registered TrackAcademic account. '
                       'Your teacher or student role will be verified automatically.',
                       style: TextStyle(
                         fontSize: 16,
@@ -327,20 +312,29 @@ class _SignInScreenState extends State<SignInScreen> {
                         ],
                       ),
                     ),
-                    if (kDebugMode) const SizedBox(height: AppSpacing.regular),
+                    const SizedBox(height: 24),
 
-                    if (kDebugMode)
-                      OutlinedButton.icon(
-                        onPressed: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (context) => const RolePreviewScreen(),
-                            ),
-                          );
-                        },
-                        icon: const Icon(Icons.science_outlined),
-                        label: const Text('Open UI development preview'),
-                      ),
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        const Text(
+                          "Don't have an account? ",
+                          style: TextStyle(color: Color(0xFF68728B)),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (context) =>
+                                    const CreateAccountScreen(),
+                              ),
+                            );
+                          },
+                          child: const Text('Create account'),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),

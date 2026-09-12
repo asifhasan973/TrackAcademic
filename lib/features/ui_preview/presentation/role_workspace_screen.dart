@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:trackademic/core/models/user_role.dart';
 import 'package:trackademic/core/services/auth_service.dart';
 import 'package:trackademic/core/services/notification_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
@@ -68,7 +69,8 @@ abstract final class WorkspaceDestinations {
     ),
     WorkspaceDestination(
       label: 'Profile',
-      description: 'Manage your Trackademic account and academic information.',
+      description:
+          'Manage your TrackAcademic account and academic information.',
       icon: Icons.person_outline_rounded,
       selectedIcon: Icons.person_rounded,
     ),
@@ -111,24 +113,49 @@ abstract final class WorkspaceDestinations {
 }
 
 class RoleWorkspaceScreen extends StatefulWidget {
-  final String roleName;
+  final UserRole role;
   final List<WorkspaceDestination> destinations;
   final Future<void> Function()? onSignOut;
+  final int initialIndex;
 
-  const RoleWorkspaceScreen({
-    required this.roleName,
-    required this.destinations,
+  RoleWorkspaceScreen({
+    UserRole? role,
+    String? roleName,
+    List<WorkspaceDestination>? destinations,
     this.onSignOut,
+    this.initialIndex = 0,
     super.key,
-  });
+  }) : role = _resolveRole(role, roleName),
+       destinations =
+           destinations ??
+           (_resolveRole(role, roleName) == UserRole.teacher
+               ? WorkspaceDestinations.teacher
+               : WorkspaceDestinations.student);
+
+  static UserRole _resolveRole(UserRole? role, String? roleName) {
+    if (role != null) return role;
+    if (roleName != null) {
+      final parsed = UserRole.fromString(roleName);
+      if (parsed != null) return parsed;
+    }
+    return UserRole.student;
+  }
 
   @override
   State<RoleWorkspaceScreen> createState() => _RoleWorkspaceScreenState();
 }
 
 class _RoleWorkspaceScreenState extends State<RoleWorkspaceScreen> {
-  int _selectedIndex = 0;
+  late int _selectedIndex;
   bool _isSigningOut = false;
+  String? _highlightSessionId;
+  String? _highlightAssessmentId;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedIndex = widget.initialIndex;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -137,19 +164,19 @@ class _RoleWorkspaceScreenState extends State<RoleWorkspaceScreen> {
 
     final Widget content;
 
-    if (widget.roleName == 'Teacher' && _selectedIndex == 0) {
+    if (widget.role == UserRole.teacher && _selectedIndex == 0) {
       content = const TeacherDashboardScreen();
-    } else if (widget.roleName == 'Teacher' && _selectedIndex == 1) {
+    } else if (widget.role == UserRole.teacher && _selectedIndex == 1) {
       content = const TeacherCreateAttendanceScreen();
-    } else if (widget.roleName == 'Teacher' && _selectedIndex == 2) {
+    } else if (widget.role == UserRole.teacher && _selectedIndex == 2) {
       content = const TeacherCoursesScreen();
-    } else if (widget.roleName == 'Teacher' && _selectedIndex == 3) {
+    } else if (widget.role == UserRole.teacher && _selectedIndex == 3) {
       content = const TeacherMarksScreen();
-    } else if (widget.roleName == 'Teacher' && _selectedIndex == 4) {
+    } else if (widget.role == UserRole.teacher && _selectedIndex == 4) {
       content = const TeacherScheduleScreen();
-    } else if (widget.roleName == 'Teacher' && _selectedIndex == 5) {
+    } else if (widget.role == UserRole.teacher && _selectedIndex == 5) {
       content = const StudentProfileScreen();
-    } else if (widget.roleName == 'Student' && _selectedIndex == 0) {
+    } else if (widget.role == UserRole.student && _selectedIndex == 0) {
       content = StudentDashboardScreen(
         onOpenAttendance: () {
           _selectDestination(1);
@@ -161,32 +188,42 @@ class _RoleWorkspaceScreenState extends State<RoleWorkspaceScreen> {
           _selectDestination(3);
         },
       );
-    } else if (widget.roleName == 'Student' && _selectedIndex == 1) {
-      content = const StudentAttendanceScreen();
-    } else if (widget.roleName == 'Student' && _selectedIndex == 2) {
-      content = const StudentMarksScreen();
-    } else if (widget.roleName == 'Student' && _selectedIndex == 3) {
+    } else if (widget.role == UserRole.student && _selectedIndex == 1) {
+      content = StudentAttendanceScreen(
+        highlightSessionId: _highlightSessionId,
+      );
+    } else if (widget.role == UserRole.student && _selectedIndex == 2) {
+      content = StudentMarksScreen(
+        highlightAssessmentId: _highlightAssessmentId,
+      );
+    } else if (widget.role == UserRole.student && _selectedIndex == 3) {
       content = const StudentScheduleScreen();
-    } else if (widget.roleName == 'Student' && _selectedIndex == 4) {
+    } else if (widget.role == UserRole.student && _selectedIndex == 4) {
       content = const StudentProfileScreen();
     } else {
       content = _ModulePlaceholder(
-        roleName: widget.roleName,
+        roleName: widget.role.name,
         destination: destination,
       );
     }
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.roleName} Workspace'),
+        title: const Text('TrackAcademic'),
         actions: [
           _NotificationIconButton(
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (context) => const NotificationsScreen(),
-                ),
-              );
+            onPressed: () async {
+              final payload = await Navigator.of(context)
+                  .push<NotificationNavigationPayload>(
+                    MaterialPageRoute(
+                      builder: (context) =>
+                          NotificationsScreen(role: widget.role),
+                    ),
+                  );
+
+              if (payload != null && mounted) {
+                _handleNotificationPayload(payload);
+              }
             },
           ),
           IconButton(
@@ -252,15 +289,78 @@ class _RoleWorkspaceScreenState extends State<RoleWorkspaceScreen> {
           : NavigationBar(
               selectedIndex: _selectedIndex,
               onDestinationSelected: _selectDestination,
+              labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
               destinations: widget.destinations.map((item) {
                 return NavigationDestination(
                   icon: Icon(item.icon),
                   selectedIcon: Icon(item.selectedIcon),
                   label: item.label,
+                  tooltip: item.label,
                 );
               }).toList(),
             ),
     );
+  }
+
+  void _handleNotificationPayload(NotificationNavigationPayload payload) {
+    setState(() {
+      _highlightSessionId = null;
+      _highlightAssessmentId = null;
+    });
+
+    if (widget.role == UserRole.student) {
+      switch (payload.destination) {
+        case NotificationNavigationResult.studentAttendance:
+          setState(() {
+            _selectedIndex = 1;
+            _highlightSessionId = payload.entityId;
+          });
+          break;
+        case NotificationNavigationResult.studentMarks:
+          setState(() {
+            _selectedIndex = 2;
+            _highlightAssessmentId = payload.entityId;
+          });
+          break;
+        case NotificationNavigationResult.studentSchedule:
+          setState(() {
+            _selectedIndex = 3;
+          });
+          break;
+        case NotificationNavigationResult.studentDashboard:
+          setState(() {
+            _selectedIndex = 0;
+          });
+          break;
+        default:
+          break;
+      }
+    } else {
+      switch (payload.destination) {
+        case NotificationNavigationResult.teacherAttendance:
+          setState(() {
+            _selectedIndex = 1;
+          });
+          break;
+        case NotificationNavigationResult.teacherCourses:
+          setState(() {
+            _selectedIndex = 2;
+          });
+          break;
+        case NotificationNavigationResult.teacherMarks:
+          setState(() {
+            _selectedIndex = 3;
+          });
+          break;
+        case NotificationNavigationResult.teacherSchedule:
+          setState(() {
+            _selectedIndex = 4;
+          });
+          break;
+        default:
+          break;
+      }
+    }
   }
 
   void _selectDestination(int index) {
@@ -270,6 +370,8 @@ class _RoleWorkspaceScreenState extends State<RoleWorkspaceScreen> {
 
     setState(() {
       _selectedIndex = index;
+      _highlightSessionId = null;
+      _highlightAssessmentId = null;
     });
   }
 
@@ -285,6 +387,7 @@ class _RoleWorkspaceScreenState extends State<RoleWorkspaceScreen> {
     });
 
     try {
+      Navigator.of(context).popUntil((route) => route.isFirst);
       await signOut();
     } finally {
       if (mounted) {

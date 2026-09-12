@@ -4,7 +4,9 @@ import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
 
 class StudentMarksScreen extends StatefulWidget {
-  const StudentMarksScreen({super.key});
+  final String? highlightAssessmentId;
+
+  const StudentMarksScreen({this.highlightAssessmentId, super.key});
 
   @override
   State<StudentMarksScreen> createState() => _StudentMarksScreenState();
@@ -19,6 +21,14 @@ class _StudentMarksScreenState extends State<StudentMarksScreen> {
   void initState() {
     super.initState();
     _reload();
+  }
+
+  @override
+  void didUpdateWidget(StudentMarksScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.highlightAssessmentId != widget.highlightAssessmentId) {
+      setState(_reload);
+    }
   }
 
   void _reload() {
@@ -151,7 +161,10 @@ class _StudentMarksScreenState extends State<StudentMarksScreen> {
         ),
         const SizedBox(height: AppSpacing.extraLarge),
         for (final entry in grouped.entries) ...[
-          _CourseMarksCard(marks: entry.value),
+          _CourseMarksCard(
+            marks: entry.value,
+            highlightAssessmentId: widget.highlightAssessmentId,
+          ),
           const SizedBox(height: AppSpacing.regular),
         ],
       ],
@@ -161,8 +174,9 @@ class _StudentMarksScreenState extends State<StudentMarksScreen> {
 
 class _CourseMarksCard extends StatelessWidget {
   final List<StudentMarkRecord> marks;
+  final String? highlightAssessmentId;
 
-  const _CourseMarksCard({required this.marks});
+  const _CourseMarksCard({required this.marks, this.highlightAssessmentId});
 
   @override
   Widget build(BuildContext context) {
@@ -242,7 +256,11 @@ class _CourseMarksCard extends StatelessWidget {
           ),
           const SizedBox(height: AppSpacing.large),
           for (int index = 0; index < ordered.length; index++) ...[
-            _AssessmentRow(mark: ordered[index]),
+            _AssessmentRow(
+              mark: ordered[index],
+              isHighlighted:
+                  ordered[index].assessmentId == highlightAssessmentId,
+            ),
             if (index < ordered.length - 1) const Divider(height: 28),
           ],
         ],
@@ -253,8 +271,9 @@ class _CourseMarksCard extends StatelessWidget {
 
 class _AssessmentRow extends StatelessWidget {
   final StudentMarkRecord mark;
+  final bool isHighlighted;
 
-  const _AssessmentRow({required this.mark});
+  const _AssessmentRow({required this.mark, this.isHighlighted = false});
 
   @override
   Widget build(BuildContext context) {
@@ -262,7 +281,7 @@ class _AssessmentRow extends StatelessWidget {
         ? 0.0
         : (mark.score / mark.maxScore) * 100;
 
-    return Row(
+    final content = Row(
       children: [
         Expanded(
           child: Column(
@@ -270,8 +289,10 @@ class _AssessmentRow extends StatelessWidget {
             children: [
               Text(
                 mark.assessmentName,
-                style: const TextStyle(
-                  color: AppColors.textPrimary,
+                style: TextStyle(
+                  color: isHighlighted
+                      ? AppColors.primary
+                      : AppColors.textPrimary,
                   fontWeight: FontWeight.w800,
                 ),
               ),
@@ -313,14 +334,28 @@ class _AssessmentRow extends StatelessWidget {
         ),
         Text(
           '${_format(mark.score)} / ${_format(mark.maxScore)}',
-          style: const TextStyle(
-            color: AppColors.textPrimary,
+          style: TextStyle(
+            color: isHighlighted ? AppColors.primary : AppColors.textPrimary,
             fontSize: 17,
             fontWeight: FontWeight.w900,
           ),
         ),
       ],
     );
+
+    if (isHighlighted) {
+      return Container(
+        padding: const EdgeInsets.all(AppSpacing.small),
+        decoration: BoxDecoration(
+          color: AppColors.informationBackground,
+          borderRadius: BorderRadius.circular(AppRadius.medium),
+          border: Border.all(color: AppColors.primary),
+        ),
+        child: content,
+      );
+    }
+
+    return content;
   }
 
   String _format(double value) {

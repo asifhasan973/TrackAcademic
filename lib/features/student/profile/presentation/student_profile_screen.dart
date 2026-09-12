@@ -59,37 +59,55 @@ class _StudentProfileScreenState extends State<StudentProfileScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Profile',
-                          style: TextStyle(
-                            color: AppColors.textPrimary,
-                            fontSize: 28,
-                            fontWeight: FontWeight.w900,
-                          ),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final isNarrow = constraints.maxWidth < 500;
+                  final titleCol = Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: const [
+                      Text(
+                        'Profile',
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 28,
+                          fontWeight: FontWeight.w900,
                         ),
-                        SizedBox(height: AppSpacing.small),
-                        Text(
-                          'Your Trackademic account information.',
-                          style: TextStyle(
-                            color: AppColors.textSecondary,
-                            fontSize: 15,
-                          ),
+                      ),
+                      SizedBox(height: AppSpacing.small),
+                      Text(
+                        'Your TrackAcademic account information.',
+                        style: TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 15,
                         ),
-                      ],
-                    ),
-                  ),
-                  FilledButton.icon(
+                      ),
+                    ],
+                  );
+
+                  final editBtn = FilledButton.icon(
                     onPressed: () => _editProfile(profile),
                     icon: const Icon(Icons.edit_outlined),
                     label: const Text('Edit profile'),
-                  ),
-                ],
+                  );
+
+                  if (isNarrow) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        titleCol,
+                        const SizedBox(height: AppSpacing.medium),
+                        editBtn,
+                      ],
+                    );
+                  }
+
+                  return Row(
+                    children: [
+                      Expanded(child: titleCol),
+                      editBtn,
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: AppSpacing.large),
               _ProfileSummaryCard(profile: profile),
@@ -113,7 +131,7 @@ class _StudentProfileScreenState extends State<StudentProfileScreen> {
   Widget _buildInformationSection(AppUserProfile profile) {
     final personal = _SectionCard(
       title: 'Account information',
-      subtitle: 'Information stored in your Trackademic account.',
+      subtitle: 'Information stored in your TrackAcademic account.',
       icon: Icons.person_outline_rounded,
       children: [
         _InformationRow(
@@ -244,7 +262,7 @@ class _StudentProfileScreenState extends State<StudentProfileScreen> {
           ),
           title: const Text('Sign out?'),
           content: const Text(
-            'Are you sure you want to sign out of Trackademic?',
+            'Are you sure you want to sign out of TrackAcademic?',
           ),
           actions: [
             TextButton(
@@ -469,70 +487,106 @@ class _ProfileSummaryCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final labels = <String>[
       if (profile.department?.trim().isNotEmpty == true)
-        profile.department!.trim(),
-      if (profile.batch?.trim().isNotEmpty == true) profile.batch!.trim(),
-      if (profile.section?.trim().isNotEmpty == true) profile.section!.trim(),
-      if (profile.semester?.trim().isNotEmpty == true) profile.semester!.trim(),
+        'Dept: ${profile.department!.trim()}',
+      if (profile.batch?.trim().isNotEmpty == true)
+        'Batch: ${profile.batch!.trim()}',
+      if (profile.section?.trim().isNotEmpty == true)
+        'Section: ${profile.section!.trim()}',
+      if (profile.semester?.trim().isNotEmpty == true)
+        'Semester: ${profile.semester!.trim()}',
     ];
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(AppSpacing.large),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.large),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        children: [
-          Container(
+    final isEmailVerified =
+        const AuthService().currentUser?.emailVerified == true;
+
+    Widget buildAvatar() {
+      final photoUrl = profile.photoUrl?.trim();
+      if (photoUrl != null && photoUrl.isNotEmpty) {
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.large),
+          child: Image.network(
+            photoUrl,
             width: 82,
             height: 82,
-            decoration: BoxDecoration(
-              color: AppColors.informationBackground,
-              borderRadius: BorderRadius.circular(AppRadius.large),
-            ),
-            child: Center(
-              child: Text(
-                _initials(profile.displayName),
-                style: const TextStyle(
-                  color: AppColors.primary,
-                  fontSize: 27,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) => _buildInitials(),
+          ),
+        );
+      }
+      return _buildInitials();
+    }
+
+    final verificationBadge = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: isEmailVerified
+            ? AppColors.successBackground
+            : AppColors.warningBackground,
+        borderRadius: BorderRadius.circular(AppRadius.circular),
+        border: Border.all(
+          color: isEmailVerified ? AppColors.success : AppColors.warning,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isEmailVerified ? Icons.verified_rounded : Icons.pending_outlined,
+            color: isEmailVerified ? AppColors.success : AppColors.warning,
+            size: 16,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            isEmailVerified ? 'Verified' : 'Unverified',
+            style: TextStyle(
+              color: isEmailVerified ? AppColors.success : AppColors.warning,
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
             ),
           ),
-          const SizedBox(width: AppSpacing.large),
-          Expanded(
+        ],
+      ),
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isPhone = constraints.maxWidth < 600;
+
+        if (isPhone) {
+          return Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(AppSpacing.large),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(AppRadius.large),
+              border: Border.all(color: AppColors.border),
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                buildAvatar(),
+                const SizedBox(height: AppSpacing.medium),
                 Text(
                   profile.displayName.trim().isEmpty
-                      ? 'Trackademic user'
+                      ? 'TrackAcademic user'
                       : profile.displayName,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
-                    fontSize: 24,
+                    fontSize: 22,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
                 const SizedBox(height: AppSpacing.extraSmall),
                 Text(
                   'Institution ID: ${profile.institutionId}',
-                  style: const TextStyle(color: AppColors.textSecondary),
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 const SizedBox(height: AppSpacing.medium),
-                if (labels.isEmpty)
-                  const Text(
-                    'Academic details have not been added yet.',
-                    style: TextStyle(
-                      color: AppColors.textTertiary,
-                      fontSize: 12,
-                    ),
-                  )
-                else
+                if (labels.isNotEmpty) ...[
                   Wrap(
                     spacing: AppSpacing.small,
                     runSpacing: AppSpacing.small,
@@ -540,19 +594,93 @@ class _ProfileSummaryCard extends StatelessWidget {
                       for (final label in labels) _ProfileLabel(text: label),
                     ],
                   ),
+                  const SizedBox(height: AppSpacing.medium),
+                ],
+                verificationBadge,
               ],
             ),
+          );
+        }
+
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(AppSpacing.large),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(AppRadius.large),
+            border: Border.all(color: AppColors.border),
           ),
-          if (const AuthService().currentUser?.emailVerified == true)
-            const Tooltip(
-              message: 'Email verified',
-              child: Icon(
-                Icons.verified_rounded,
-                color: AppColors.success,
-                size: 30,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              buildAvatar(),
+              const SizedBox(width: AppSpacing.large),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      profile.displayName.trim().isEmpty
+                          ? 'TrackAcademic user'
+                          : profile.displayName,
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 24,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.extraSmall),
+                    Text(
+                      'Institution ID: ${profile.institutionId}',
+                      style: const TextStyle(color: AppColors.textSecondary),
+                    ),
+                    const SizedBox(height: AppSpacing.medium),
+                    if (labels.isEmpty)
+                      const Text(
+                        'Academic details have not been added yet.',
+                        style: TextStyle(
+                          color: AppColors.textTertiary,
+                          fontSize: 12,
+                        ),
+                      )
+                    else
+                      Wrap(
+                        spacing: AppSpacing.small,
+                        runSpacing: AppSpacing.small,
+                        children: [
+                          for (final label in labels)
+                            _ProfileLabel(text: label),
+                        ],
+                      ),
+                  ],
+                ),
               ),
-            ),
-        ],
+              const SizedBox(width: AppSpacing.medium),
+              verificationBadge,
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildInitials() {
+    return Container(
+      width: 82,
+      height: 82,
+      decoration: BoxDecoration(
+        color: AppColors.informationBackground,
+        borderRadius: BorderRadius.circular(AppRadius.large),
+      ),
+      child: Center(
+        child: Text(
+          _initials(profile.displayName),
+          style: const TextStyle(
+            color: AppColors.primary,
+            fontSize: 27,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
       ),
     );
   }

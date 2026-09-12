@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:trackademic/features/authentication/presentation/sign_in_screen.dart';
 import 'package:trackademic/core/services/auth_service.dart';
+import 'package:trackademic/core/widgets/brand_mark.dart';
 
 class CreateAccountScreen extends StatefulWidget {
   const CreateAccountScreen({super.key});
@@ -14,6 +15,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   static const _authService = AuthService();
 
   bool _isSubmitting = false;
+  String _selectedRole = 'student';
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _institutionIdController = TextEditingController();
@@ -62,6 +64,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         email: _emailController.text,
         institutionId: _institutionIdController.text,
         password: _passwordController.text,
+        role: _selectedRole,
       );
 
       if (!mounted) {
@@ -113,29 +116,15 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Align(
+                    const Align(
                       alignment: Alignment.centerLeft,
-                      child: Container(
-                        width: 72,
-                        height: 72,
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            colors: [Color(0xFF3454D1), Color(0xFF6D5CE7)],
-                          ),
-                          borderRadius: BorderRadius.circular(22),
-                        ),
-                        child: const Icon(
-                          Icons.person_add_alt_1_rounded,
-                          size: 36,
-                          color: Colors.white,
-                        ),
-                      ),
+                      child: BrandMark(size: 72, borderRadius: 22),
                     ),
 
                     const SizedBox(height: 26),
 
                     const Text(
-                      'Join Trackademic',
+                      'Join TrackAcademic',
                       style: TextStyle(
                         fontSize: 32,
                         fontWeight: FontWeight.w900,
@@ -148,7 +137,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
 
                     const Text(
                       'Create an account using your institutional '
-                      'information. Your role will be verified automatically.',
+                      'information. Select your account type below.',
                       style: TextStyle(
                         fontSize: 16,
                         height: 1.5,
@@ -321,6 +310,46 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                       },
                     ),
 
+                    const SizedBox(height: 18),
+
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Account type',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF17203B),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: double.infinity,
+                          child: SegmentedButton<String>(
+                            segments: const [
+                              ButtonSegment<String>(
+                                value: 'student',
+                                label: Text('Student'),
+                                icon: Icon(Icons.school_outlined),
+                              ),
+                              ButtonSegment<String>(
+                                value: 'teacher',
+                                label: Text('Teacher'),
+                                icon: Icon(Icons.person_outline),
+                              ),
+                            ],
+                            selected: {_selectedRole},
+                            onSelectionChanged: (newSelection) {
+                              setState(() {
+                                _selectedRole = newSelection.first;
+                              });
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+
                     const SizedBox(height: 26),
 
                     SizedBox(
@@ -344,38 +373,6 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                             fontWeight: FontWeight.w700,
                           ),
                         ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 20),
-
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFEAF0FF),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: const Color(0xFFD5DFFF)),
-                      ),
-                      child: const Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(
-                            Icons.admin_panel_settings_outlined,
-                            color: Color(0xFF3454D1),
-                          ),
-                          SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              'Teacher and student permissions cannot be '
-                              'selected manually. They will be assigned '
-                              'using verified institutional records.',
-                              style: TextStyle(
-                                height: 1.45,
-                                color: Color(0xFF435175),
-                              ),
-                            ),
-                          ),
-                        ],
                       ),
                     ),
 

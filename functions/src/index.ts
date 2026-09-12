@@ -22,6 +22,7 @@ type RegistrationData = {
   email?: unknown;
   institutionId?: unknown;
   password?: unknown;
+  role?: unknown;
 };
 
 type CreateCourseData = {
@@ -817,6 +818,17 @@ export const registerUser =
         request.data.password,
       );
 
+      if (
+        typeof request.data.role !== "string" ||
+        (request.data.role !== "teacher" && request.data.role !== "student")
+      ) {
+        throw new HttpsError(
+          "invalid-argument",
+          "Role must be either 'teacher' or 'student'.",
+        );
+      }
+      const role = request.data.role;
+
       const database = getFirestore();
 
       const existingInstitutionId =
@@ -859,6 +871,7 @@ export const registerUser =
           user.uid,
           {
             institutionId,
+            role,
           },
         );
 
@@ -905,6 +918,7 @@ export const registerUser =
                 displayName,
                 email,
                 institutionId,
+                role,
                 isActive: true,
                 emailVerified: false,
                 phone: null,
@@ -929,10 +943,11 @@ export const registerUser =
               {
                 action: "user.registered",
                 actorId: user.uid,
-                actorRole: "user",
+                actorRole: role,
                 targetId: user.uid,
                 metadata: {
                   institutionId,
+                  role,
                 },
                 createdAt: timestamp,
               },
@@ -2856,6 +2871,13 @@ export const createAttendanceSession =
         2,
         40,
       );
+
+      if (classType !== "Theory" && classType !== "Sessional") {
+        throw new HttpsError(
+          "invalid-argument",
+          "Class type must be either 'Theory' or 'Sessional'.",
+        );
+      }
 
       const durationMinutes =
         requiredNumber(

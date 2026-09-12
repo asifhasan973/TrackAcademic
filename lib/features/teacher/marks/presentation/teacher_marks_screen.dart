@@ -600,50 +600,79 @@ class _MarksEditorDialogState extends State<_MarksEditorDialog> {
               itemBuilder: (context, index) {
                 final student = students[index];
 
-                return Row(
-                  children: [
-                    Expanded(
-                      child: ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(student.displayName),
-                        subtitle: Text(student.institutionId),
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              student.displayName,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              student.institutionId,
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                                fontSize: 12,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    SizedBox(
-                      width: 110,
-                      child: TextFormField(
-                        initialValue: _scores[student.uid]?.toString() ?? '',
-                        enabled: widget.assessment.status != 'published',
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        decoration: InputDecoration(
-                          suffixText:
-                              '/${widget.assessment.maxScore.toStringAsFixed(0)}',
-                        ),
-                        onChanged: (value) {
-                          final score = double.tryParse(value);
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 90,
+                        child: TextFormField(
+                          initialValue: _scores[student.uid]?.toString() ?? '',
+                          enabled: widget.assessment.status != 'published',
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          decoration: InputDecoration(
+                            isDense: true,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 8,
+                            ),
+                            suffixText:
+                                '/${widget.assessment.maxScore.toStringAsFixed(0)}',
+                          ),
+                          onChanged: (value) {
+                            final score = double.tryParse(value);
 
-                          if (score == null) {
-                            _scores.remove(student.uid);
-                          } else {
-                            _scores[student.uid] = score;
-                          }
-                        },
-                      ),
-                    ),
-                    if (widget.assessment.status == 'published') ...[
-                      const SizedBox(width: AppSpacing.small),
-                      IconButton(
-                        tooltip: 'Correct published mark',
-                        icon: const Icon(
-                          Icons.edit_note,
-                          color: AppColors.primary,
+                            if (score == null) {
+                              _scores.remove(student.uid);
+                            } else {
+                              _scores[student.uid] = score;
+                            }
+                          },
                         ),
-                        onPressed: () => _correctMark(student),
                       ),
+                      if (widget.assessment.status == 'published') ...[
+                        const SizedBox(width: 4),
+                        IconButton(
+                          tooltip: 'Correct published mark',
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          icon: const Icon(
+                            Icons.edit_note,
+                            color: AppColors.primary,
+                            size: 22,
+                          ),
+                          onPressed: () => _correctMark(student),
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 );
               },
             );
@@ -816,19 +845,20 @@ class _MarksEditorDialogState extends State<_MarksEditorDialog> {
   }
 }
 
-class _AssessmentCard extends StatelessWidget {
+class TeacherAssessmentCard extends StatelessWidget {
   final TeacherAssessment assessment;
   final VoidCallback onEnterMarks;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final VoidCallback? onPublish;
 
-  const _AssessmentCard({
+  const TeacherAssessmentCard({
     required this.assessment,
     required this.onEnterMarks,
     this.onEdit,
     this.onDelete,
     required this.onPublish,
+    super.key,
   });
 
   @override
@@ -837,17 +867,22 @@ class _AssessmentCard extends StatelessWidget {
         ? ' · Date: ${assessment.date}'
         : '';
 
-    return Material(
-      color: AppColors.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.large),
-        side: const BorderSide(color: AppColors.border),
-      ),
-      child: ListTile(
-        title: Row(
+    final details = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: AppSpacing.small,
+          runSpacing: 4,
           children: [
-            Text('${assessment.name} · ${assessment.courseCode}'),
-            const SizedBox(width: AppSpacing.small),
+            Text(
+              '${assessment.name} · ${assessment.courseCode}',
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                color: AppColors.textPrimary,
+              ),
+            ),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
@@ -865,43 +900,79 @@ class _AssessmentCard extends StatelessWidget {
             ),
           ],
         ),
-        subtitle: Text(
+        const SizedBox(height: 4),
+        Text(
           'Maximum: ${assessment.maxScore.toStringAsFixed(0)}$dateDisplay · ${assessment.status}',
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
         ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            OutlinedButton(
-              onPressed: onEnterMarks,
-              child: Text(
-                assessment.status == 'published' ? 'View marks' : 'Enter marks',
-              ),
-            ),
-            if (onEdit != null) ...[
-              const SizedBox(width: AppSpacing.small),
-              IconButton(
-                tooltip: 'Edit assessment',
-                icon: const Icon(Icons.edit_outlined),
-                onPressed: onEdit,
-              ),
-            ],
-            if (onDelete != null) ...[
-              IconButton(
-                tooltip: 'Delete draft assessment',
-                icon: const Icon(Icons.delete_outline, color: AppColors.danger),
-                onPressed: onDelete,
-              ),
-            ],
-            if (onPublish != null) ...[
-              const SizedBox(width: AppSpacing.small),
-              FilledButton(onPressed: onPublish, child: const Text('Publish')),
-            ],
-          ],
+      ],
+    );
+
+    final actions = Wrap(
+      spacing: AppSpacing.small,
+      runSpacing: AppSpacing.small,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        OutlinedButton(
+          onPressed: onEnterMarks,
+          child: Text(
+            assessment.status == 'published' ? 'View marks' : 'Enter marks',
+          ),
+        ),
+        if (onEdit != null)
+          IconButton(
+            tooltip: 'Edit assessment',
+            icon: const Icon(Icons.edit_outlined),
+            onPressed: onEdit,
+          ),
+        if (onDelete != null)
+          IconButton(
+            tooltip: 'Delete draft assessment',
+            icon: const Icon(Icons.delete_outline, color: AppColors.danger),
+            onPressed: onDelete,
+          ),
+        if (onPublish != null)
+          FilledButton(onPressed: onPublish, child: const Text('Publish')),
+      ],
+    );
+
+    return Material(
+      color: AppColors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.large),
+        side: const BorderSide(color: AppColors.border),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.large),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final isNarrow = constraints.maxWidth < 650;
+            if (isNarrow) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  details,
+                  const SizedBox(height: AppSpacing.medium),
+                  actions,
+                ],
+              );
+            }
+
+            return Row(
+              children: [
+                Expanded(child: details),
+                const SizedBox(width: AppSpacing.medium),
+                actions,
+              ],
+            );
+          },
         ),
       ),
     );
   }
 }
+
+typedef _AssessmentCard = TeacherAssessmentCard;
 
 class _MarksPageData {
   final List<TeacherCourse> courses;

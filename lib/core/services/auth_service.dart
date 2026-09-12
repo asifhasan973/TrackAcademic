@@ -21,17 +21,30 @@ class AuthService {
     return _auth.userChanges();
   }
 
-  User? get currentUser => _auth.currentUser;
+  User? get currentUser {
+    try {
+      return _auth.currentUser;
+    } catch (_) {
+      return null;
+    }
+  }
 
   Future<AppUserProfile> register({
     required String displayName,
     required String email,
     required String institutionId,
     required String password,
+    required String role,
   }) async {
     final normalizedEmail = email.trim().toLowerCase();
-
     final normalizedInstitutionId = institutionId.trim().toUpperCase();
+    final normalizedRole = role.trim().toLowerCase();
+
+    if (normalizedRole != 'teacher' && normalizedRole != 'student') {
+      throw const AuthServiceException(
+        'Account role must be either teacher or student.',
+      );
+    }
 
     try {
       await _functions.httpsCallable('registerUser').call({
@@ -39,6 +52,7 @@ class AuthService {
         'email': normalizedEmail,
         'institutionId': normalizedInstitutionId,
         'password': password,
+        'role': normalizedRole,
       });
 
       final credential = await _auth.signInWithEmailAndPassword(
@@ -101,7 +115,7 @@ class AuthService {
 
     if (!document.exists || data == null) {
       throw const AuthServiceException(
-        'No Trackademic profile exists for this account.',
+        'No TrackAcademic profile exists for this account.',
       );
     }
 
@@ -247,6 +261,7 @@ class AppUserProfile {
   final String? role;
 
   final bool isActive;
+  final String? photoUrl;
   final String? department;
   final String? batch;
   final String? section;
@@ -259,6 +274,7 @@ class AppUserProfile {
     required this.institutionId,
     required this.isActive,
     this.role,
+    this.photoUrl,
     this.department,
     this.batch,
     this.section,
@@ -273,6 +289,7 @@ class AppUserProfile {
       institutionId: data['institutionId'] as String? ?? '',
       role: data['role'] as String?,
       isActive: data['isActive'] as bool? ?? false,
+      photoUrl: data['photoUrl'] as String?,
       department: data['department'] as String?,
       batch: data['batch'] as String?,
       section: data['section'] as String?,

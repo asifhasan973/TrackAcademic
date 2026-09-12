@@ -9,7 +9,7 @@ class TrackademicApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Trackademic',
+      title: 'TrackAcademic',
       theme: AppTheme.light,
       home: const AuthGate(),
     );

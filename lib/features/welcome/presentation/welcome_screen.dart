@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../authentication/presentation/sign_in_screen.dart';
 import '../../authentication/presentation/create_account_screen.dart';
+import '../../../core/widgets/brand_mark.dart';
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
@@ -22,20 +23,10 @@ class WelcomeScreen extends StatelessWidget {
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 42,
-              height: 42,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF3454D1), Color(0xFF6D5CE7)],
-                ),
-                borderRadius: BorderRadius.circular(13),
-              ),
-              child: const Icon(Icons.school_rounded, color: Colors.white),
-            ),
+            const BrandMark(size: 42, borderRadius: 13),
             const SizedBox(width: 11),
             Text(
-              'Trackademic',
+              'TrackAcademic',
               style: TextStyle(
                 fontSize: isCompact ? 18 : 21,
                 fontWeight: FontWeight.w800,
@@ -193,7 +184,7 @@ class _HeroMessage extends StatelessWidget {
         ),
         const SizedBox(height: 20),
         Text(
-          'Trackademic combines secure classroom attendance, '
+          'TrackAcademic combines secure classroom attendance, '
           'academic records, CT marks, attendance marks, and '
           'class schedules in one organized platform.',
           style: textTheme.titleMedium?.copyWith(

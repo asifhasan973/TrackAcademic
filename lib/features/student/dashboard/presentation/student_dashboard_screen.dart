@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:trackademic/core/services/academic_service.dart';
 import 'package:trackademic/core/services/auth_service.dart';
+import 'package:trackademic/core/services/student_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
 
@@ -23,6 +24,7 @@ class StudentDashboardScreen extends StatefulWidget {
 class _StudentDashboardScreenState extends State<StudentDashboardScreen> {
   static const _academicService = AcademicService();
   static const _authService = AuthService();
+  static const _studentAcademicService = StudentAcademicService();
 
   late Future<StudentAcademicOverview> _overviewFuture;
 
@@ -235,14 +237,22 @@ class _StudentDashboardScreenState extends State<StudentDashboardScreen> {
                 label: const Text('View schedule'),
               );
 
-              if (constraints.maxWidth >= 680) {
+              final joinCourseButton = FilledButton.icon(
+                onPressed: _joinCourse,
+                icon: const Icon(Icons.add_rounded),
+                label: const Text('Join course'),
+              );
+
+              if (constraints.maxWidth >= 780) {
                 return Row(
                   children: [
                     Expanded(child: attendanceButton),
-                    const SizedBox(width: AppSpacing.medium),
+                    const SizedBox(width: AppSpacing.small),
                     Expanded(child: marksButton),
-                    const SizedBox(width: AppSpacing.medium),
+                    const SizedBox(width: AppSpacing.small),
                     Expanded(child: scheduleButton),
+                    const SizedBox(width: AppSpacing.small),
+                    Expanded(child: joinCourseButton),
                   ],
                 );
               }
@@ -254,6 +264,8 @@ class _StudentDashboardScreenState extends State<StudentDashboardScreen> {
                   SizedBox(width: double.infinity, child: marksButton),
                   const SizedBox(height: AppSpacing.small),
                   SizedBox(width: double.infinity, child: scheduleButton),
+                  const SizedBox(height: AppSpacing.small),
+                  SizedBox(width: double.infinity, child: joinCourseButton),
                 ],
               );
             },
@@ -261,6 +273,67 @@ class _StudentDashboardScreenState extends State<StudentDashboardScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _joinCourse() async {
+    final controller = TextEditingController();
+
+    final code = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Join course'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.characters,
+          decoration: const InputDecoration(labelText: 'Join code'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Request'),
+          ),
+        ],
+      ),
+    );
+
+    controller.dispose();
+
+    if (code == null || code.isEmpty) {
+      return;
+    }
+
+    try {
+      await _studentAcademicService.requestJoinCourse(code);
+
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Join request sent to the course owner.'),
+          backgroundColor: AppColors.information,
+        ),
+      );
+
+      _retry();
+    } on StudentAcademicServiceException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.message),
+          backgroundColor: AppColors.danger,
+        ),
+      );
+    }
   }
 
   Widget _buildMainContent(StudentAcademicOverview overview) {

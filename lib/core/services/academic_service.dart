@@ -26,7 +26,7 @@ class AcademicService {
 
     if (data == null) {
       throw const AcademicServiceException(
-        'Your Trackademic profile could not be loaded.',
+        'Your TrackAcademic profile could not be loaded.',
       );
     }
 

@@ -318,21 +318,23 @@ class _TeacherCreateAttendanceScreenState
   }
 }
 
-class _CreateSessionDialog extends StatefulWidget {
+class CreateSessionDialog extends StatefulWidget {
   final List<TeacherCourse> courses;
 
-  const _CreateSessionDialog({required this.courses});
+  const CreateSessionDialog({required this.courses, super.key});
 
   @override
-  State<_CreateSessionDialog> createState() => _CreateSessionDialogState();
+  State<CreateSessionDialog> createState() => _CreateSessionDialogState();
 }
 
-class _CreateSessionDialogState extends State<_CreateSessionDialog> {
+typedef _CreateSessionDialog = CreateSessionDialog;
+
+class _CreateSessionDialogState extends State<CreateSessionDialog> {
   static const _service = TeacherAcademicService();
 
   late String _courseId;
 
-  final _durationController = TextEditingController(text: '15');
+  int _durationMinutes = 1;
 
   final _passcodeController = TextEditingController();
 
@@ -361,7 +363,6 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
 
   @override
   void dispose() {
-    _durationController.dispose();
     _passcodeController.dispose();
     _radiusController.dispose();
     super.dispose();
@@ -369,6 +370,33 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final now = DateTime.now();
+    const weekdays = [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
+    ];
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    final dateStr =
+        '${weekdays[now.weekday - 1]}, ${months[now.month - 1]} ${now.day}, ${now.year}';
+
     return AlertDialog(
       title: const Text('Create attendance session'),
       content: SizedBox(
@@ -376,6 +404,41 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
         child: SingleChildScrollView(
           child: Column(
             children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.medium,
+                  vertical: AppSpacing.small,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.informationBackground,
+                  borderRadius: BorderRadius.circular(AppRadius.medium),
+                  border: Border.all(
+                    color: AppColors.primary.withValues(alpha: 0.2),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.calendar_today_rounded,
+                      size: 18,
+                      color: AppColors.primary,
+                    ),
+                    const SizedBox(width: AppSpacing.small),
+                    Expanded(
+                      child: Text(
+                        'Session Date: $dateStr',
+                        style: const TextStyle(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: AppSpacing.medium),
               DropdownButtonFormField<String>(
                 initialValue: _courseId,
                 decoration: const InputDecoration(labelText: 'Course'),
@@ -402,10 +465,9 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
                 items: const [
                   DropdownMenuItem(value: 'Theory', child: Text('Theory')),
                   DropdownMenuItem(
-                    value: 'Practical',
-                    child: Text('Practical'),
+                    value: 'Sessional',
+                    child: Text('Sessional'),
                   ),
-                  DropdownMenuItem(value: 'Makeup', child: Text('Makeup')),
                 ],
                 onChanged: (value) {
                   if (value != null) {
@@ -416,11 +478,49 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
                 },
               ),
               const SizedBox(height: AppSpacing.medium),
-              TextField(
-                controller: _durationController,
-                keyboardType: TextInputType.number,
+              InputDecorator(
                 decoration: const InputDecoration(
-                  labelText: 'Duration (minutes)',
+                  labelText: 'Duration',
+                  border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: AppSpacing.medium,
+                    vertical: 4,
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.remove_circle_outline_rounded),
+                      tooltip: 'Decrease duration',
+                      onPressed: _durationMinutes <= 1
+                          ? null
+                          : () {
+                              setState(() {
+                                _durationMinutes--;
+                              });
+                            },
+                    ),
+                    Text(
+                      '$_durationMinutes ${_durationMinutes == 1 ? "min" : "mins"}',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.add_circle_outline_rounded),
+                      tooltip: 'Increase duration',
+                      onPressed: _durationMinutes >= 180
+                          ? null
+                          : () {
+                              setState(() {
+                                _durationMinutes++;
+                              });
+                            },
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: AppSpacing.small),
@@ -544,11 +644,13 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
   }
 
   Future<void> _submit() async {
-    final duration = int.tryParse(_durationController.text.trim());
+    final duration = _durationMinutes;
 
-    if (duration == null || duration <= 0) {
+    if (duration < 1 || duration > 180) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a valid attendance duration.')),
+        const SnackBar(
+          content: Text('Duration must be between 1 and 180 minutes.'),
+        ),
       );
 
       return;
@@ -1062,17 +1164,18 @@ class _MonitorData {
   const _MonitorData({required this.students, required this.records});
 }
 
-class _SessionCard extends StatelessWidget {
+class TeacherAttendanceSessionCard extends StatelessWidget {
   final TeacherAttendanceSession session;
   final VoidCallback onView;
   final VoidCallback onSummary;
   final VoidCallback? onClose;
 
-  const _SessionCard({
+  const TeacherAttendanceSessionCard({
     required this.session,
     required this.onView,
     required this.onSummary,
     required this.onClose,
+    super.key,
   });
 
   String get _timingLabel {
@@ -1097,6 +1200,45 @@ class _SessionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final details = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '${session.courseCode} · ${session.courseName}',
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '${session.classType} · ${session.durationMinutes} min · $_timingLabel',
+          style: const TextStyle(color: AppColors.textSecondary),
+        ),
+        if (session.requiresGps) ...[
+          const SizedBox(height: 2),
+          const Text(
+            'GPS verification enabled',
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+          ),
+        ],
+      ],
+    );
+
+    final actions = Wrap(
+      spacing: AppSpacing.small,
+      runSpacing: AppSpacing.small,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        OutlinedButton(onPressed: onView, child: const Text('Monitor')),
+        if (session.status == 'closed')
+          FilledButton.icon(
+            onPressed: onSummary,
+            icon: const Icon(Icons.analytics_outlined, size: 18),
+            label: const Text('View summary'),
+          ),
+        if (onClose != null)
+          FilledButton(onPressed: onClose, child: const Text('Close session')),
+      ],
+    );
+
     return Material(
       color: AppColors.surface,
       shape: RoundedRectangleBorder(
@@ -1105,53 +1247,35 @@ class _SessionCard extends StatelessWidget {
       ),
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.large),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final isNarrow = constraints.maxWidth < 620;
+            if (isNarrow) {
+              return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    '${session.courseCode} · ${session.courseName}',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  Text(
-                    '${session.classType} · ${session.durationMinutes} min · $_timingLabel',
-                    style: const TextStyle(color: AppColors.textSecondary),
-                  ),
-                  if (session.requiresGps)
-                    const Text(
-                      'GPS verification enabled',
-                      style: TextStyle(color: AppColors.textSecondary),
-                    ),
+                  details,
+                  const SizedBox(height: AppSpacing.medium),
+                  actions,
                 ],
-              ),
-            ),
-            OutlinedButton(onPressed: onView, child: const Text('Monitor')),
-            if (session.status == 'closed') ...[
-              const SizedBox(width: AppSpacing.small),
-              FilledButton.icon(
-                onPressed: onSummary,
-                icon: const Icon(Icons.analytics_outlined),
-                label: const Text('View summary'),
-              ),
-            ],
-            if (onClose != null) ...[
-              const SizedBox(width: AppSpacing.small),
-              FilledButton(
-                onPressed: onClose,
-                child: const Text('Close session'),
-              ),
-            ],
-          ],
+              );
+            }
+
+            return Row(
+              children: [
+                Expanded(child: details),
+                const SizedBox(width: AppSpacing.medium),
+                actions,
+              ],
+            );
+          },
         ),
       ),
     );
   }
 }
+
+typedef _SessionCard = TeacherAttendanceSessionCard;
 
 class _EmptyAttendance extends StatelessWidget {
   const _EmptyAttendance();

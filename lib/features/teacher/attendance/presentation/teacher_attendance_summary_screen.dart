@@ -21,11 +21,24 @@ class _TeacherAttendanceSummaryScreenState
 
   late Future<_SummaryData> _future;
   bool _exporting = false;
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
 
   @override
   void initState() {
     super.initState();
     _reload();
+    _searchController.addListener(() {
+      setState(() {
+        _searchQuery = _searchController.text.trim().toLowerCase();
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   void _reload() {
@@ -456,6 +469,18 @@ class _TeacherAttendanceSummaryScreenState
     List<EnrolledStudent> students,
     Map<String, TeacherAttendanceRecord> recordsMap,
   ) {
+    final filteredStudents = _searchQuery.isEmpty
+        ? students
+        : students.where((s) {
+            final nameMatches = s.displayName.toLowerCase().contains(
+              _searchQuery,
+            );
+            final idMatches = s.institutionId.toLowerCase().contains(
+              _searchQuery,
+            );
+            return nameMatches || idMatches;
+          }).toList();
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(AppSpacing.large),
@@ -488,6 +513,27 @@ class _TeacherAttendanceSummaryScreenState
             ],
           ),
           const SizedBox(height: AppSpacing.medium),
+          TextField(
+            controller: _searchController,
+            decoration: InputDecoration(
+              hintText: 'Search by student name or institution ID/roll...',
+              prefixIcon: const Icon(Icons.search_rounded),
+              suffixIcon: _searchController.text.isNotEmpty
+                  ? IconButton(
+                      tooltip: 'Clear search',
+                      icon: const Icon(Icons.clear_rounded),
+                      onPressed: () {
+                        _searchController.clear();
+                      },
+                    )
+                  : null,
+              isDense: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppRadius.medium),
+              ),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.medium),
           if (students.isEmpty)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 24),
@@ -498,14 +544,27 @@ class _TeacherAttendanceSummaryScreenState
                 ),
               ),
             )
+          else if (filteredStudents.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(
+                child: Text(
+                  'No matching students',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            )
           else
             ListView.separated(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              itemCount: students.length,
+              itemCount: filteredStudents.length,
               separatorBuilder: (_, _) => const Divider(),
               itemBuilder: (context, index) {
-                final student = students[index];
+                final student = filteredStudents[index];
                 final record = recordsMap[student.uid];
                 final status = record?.status.toLowerCase() ?? 'absent';
                 final source = record?.source.isNotEmpty == true

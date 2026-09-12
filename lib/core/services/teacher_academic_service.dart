@@ -11,23 +11,34 @@ class TeacherAcademicService {
       FirebaseFunctions.instanceFor(region: 'asia-south1');
 
   String get currentTeacherName {
-    final name = FirebaseAuth.instance.currentUser?.displayName?.trim();
+    try {
+      final name = FirebaseAuth.instance.currentUser?.displayName?.trim();
 
-    if (name == null || name.isEmpty) {
+      if (name == null || name.isEmpty) {
+        return 'Teacher';
+      }
+
+      return name;
+    } catch (_) {
       return 'Teacher';
     }
-
-    return name;
   }
 
   String get _teacherId {
-    final user = FirebaseAuth.instance.currentUser;
+    try {
+      final user = FirebaseAuth.instance.currentUser;
 
-    if (user == null) {
-      throw const TeacherAcademicServiceException('You are not signed in.');
+      if (user == null) {
+        throw const TeacherAcademicServiceException(
+          'You must be signed in to manage teacher academic records.',
+        );
+      }
+
+      return user.uid;
+    } catch (e) {
+      if (e is TeacherAcademicServiceException) rethrow;
+      throw TeacherAcademicServiceException(e.toString());
     }
-
-    return user.uid;
   }
 
   Future<List<TeacherCourse>> loadMyCourses({

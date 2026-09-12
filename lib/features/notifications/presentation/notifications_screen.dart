@@ -1,21 +1,16 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:trackademic/core/models/in_app_notification.dart';
+import 'package:trackademic/core/models/user_role.dart';
 import 'package:trackademic/core/services/auth_service.dart';
 import 'package:trackademic/core/services/notification_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
-import 'package:trackademic/features/student/attendance/presentation/student_attendance_screen.dart';
-import 'package:trackademic/features/student/dashboard/presentation/student_dashboard_screen.dart';
-import 'package:trackademic/features/student/marks/presentation/student_marks_screen.dart';
-import 'package:trackademic/features/student/schedule/presentation/student_schedule_screen.dart';
-import 'package:trackademic/features/teacher/attendance/presentation/teacher_create_attendance_screen.dart';
-import 'package:trackademic/features/teacher/courses/presentation/teacher_courses_screen.dart';
-import 'package:trackademic/features/teacher/marks/presentation/teacher_marks_screen.dart';
-import 'package:trackademic/features/teacher/schedule/presentation/teacher_schedule_screen.dart';
 
 class NotificationsScreen extends StatefulWidget {
-  const NotificationsScreen({super.key});
+  final UserRole? role;
+
+  const NotificationsScreen({this.role, super.key});
 
   @override
   State<NotificationsScreen> createState() => _NotificationsScreenState();
@@ -199,7 +194,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
     // 2. Fetch authenticated user profile to verify role and active status
     final database = FirebaseFirestore.instance;
-    final Map<String, dynamic>? userData;
     try {
       final userDoc = await database.collection('users').doc(userId).get();
       if (!userDoc.exists || userDoc.data()?['isActive'] != true) {
@@ -213,7 +207,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         }
         return;
       }
-      userData = userDoc.data();
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -228,7 +221,30 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
     if (!mounted) return;
 
-    final role = userData?['role'] as String? ?? '';
+    String role = widget.role == UserRole.teacher
+        ? 'teacher'
+        : widget.role == UserRole.student
+        ? 'student'
+        : '';
+
+    if (role.isEmpty) {
+      try {
+        final profileDoc = await database.collection('users').doc(userId).get();
+        final rawRole = profileDoc.data()?['role'] as String? ?? '';
+        role = rawRole.trim().toLowerCase();
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to load profile: $error'),
+              backgroundColor: AppColors.danger,
+            ),
+          );
+        }
+        return;
+      }
+    }
+
     final isTeacher = role == 'teacher';
     final isStudent = role == 'student';
 
@@ -341,68 +357,35 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       return;
     }
 
-    Widget? targetScreen;
-    switch (navResult) {
-      case NotificationNavigationResult.teacherCourses:
-        targetScreen = const TeacherCoursesScreen();
-        break;
-      case NotificationNavigationResult.teacherAttendance:
-        targetScreen = const TeacherCreateAttendanceScreen(
-          showBackButton: true,
-        );
-        break;
-      case NotificationNavigationResult.teacherMarks:
-        targetScreen = const TeacherMarksScreen();
-        break;
-      case NotificationNavigationResult.teacherSchedule:
-        targetScreen = const TeacherScheduleScreen();
-        break;
-      case NotificationNavigationResult.studentDashboard:
-        targetScreen = _buildStudentDashboard();
-        break;
-      case NotificationNavigationResult.studentAttendance:
-        targetScreen = const StudentAttendanceScreen();
-        break;
-      case NotificationNavigationResult.studentMarks:
-        targetScreen = const StudentMarksScreen();
-        break;
-      case NotificationNavigationResult.studentSchedule:
-        targetScreen = const StudentScheduleScreen();
-        break;
-      case NotificationNavigationResult.archivedNotice:
-      case NotificationNavigationResult.unrecognizedRole:
-        break;
-    }
-
-    if (targetScreen != null && mounted) {
-      await Navigator.of(
-        context,
-      ).push(MaterialPageRoute<void>(builder: (_) => targetScreen!));
-    }
-  }
-
-  Widget _buildStudentDashboard() {
-    return StudentDashboardScreen(
-      onOpenAttendance: () {
-        Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => const StudentAttendanceScreen(),
+    if (navResult == NotificationNavigationResult.unrecognizedType) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              notification.title.isNotEmpty
+                  ? 'Notification: ${notification.title}'
+                  : 'Notification received (${notification.type})',
+            ),
+            backgroundColor: AppColors.information,
           ),
         );
-      },
-      onOpenMarks: () {
-        Navigator.of(context).push(
-          MaterialPageRoute<void>(builder: (_) => const StudentMarksScreen()),
-        );
-      },
-      onOpenSchedule: () {
-        Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => const StudentScheduleScreen(),
-          ),
-        );
-      },
-    );
+      }
+      return;
+    }
+
+    if (mounted) {
+      Navigator.of(context).pop(
+        NotificationNavigationPayload(
+          destination: navResult,
+          entityId: notification.entityId.isNotEmpty
+              ? notification.entityId
+              : null,
+          courseId: notification.courseId.isNotEmpty
+              ? notification.courseId
+              : null,
+        ),
+      );
+    }
   }
 
   Future<void> _markAllAsRead(String userId) async {
@@ -554,7 +537,9 @@ class _NotificationTile extends StatelessWidget {
           AppColors.success,
           AppColors.successBackground,
         );
+      case 'marks_published':
       case 'assessment_published':
+      case 'assessment_publish':
         return (
           Icons.analytics_rounded,
           AppColors.primary,
@@ -619,6 +604,21 @@ enum NotificationNavigationResult {
   studentSchedule,
   archivedNotice,
   unrecognizedRole,
+  unrecognizedType,
+}
+
+class NotificationNavigationPayload {
+  final NotificationNavigationResult destination;
+  final String? entityId;
+  final String? courseId;
+  final String? message;
+
+  const NotificationNavigationPayload({
+    required this.destination,
+    this.entityId,
+    this.courseId,
+    this.message,
+  });
 }
 
 class NotificationNavigationResolver {
@@ -638,6 +638,7 @@ class NotificationNavigationResolver {
         case 'course_reactivated':
           return (NotificationNavigationResult.teacherCourses, null);
         case 'attendance_session_created':
+        case 'attendance_session_started':
           if (isArchived) {
             return (
               NotificationNavigationResult.archivedNotice,
@@ -645,6 +646,7 @@ class NotificationNavigationResolver {
             );
           }
           return (NotificationNavigationResult.teacherAttendance, null);
+        case 'marks_published':
         case 'assessment_publish':
         case 'assessment_published':
           return (NotificationNavigationResult.teacherMarks, null);
@@ -653,7 +655,7 @@ class NotificationNavigationResolver {
         case 'schedule_deleted':
           return (NotificationNavigationResult.teacherSchedule, null);
         default:
-          return (NotificationNavigationResult.teacherCourses, null);
+          return (NotificationNavigationResult.unrecognizedType, null);
       }
     } else {
       switch (notificationType) {
@@ -663,6 +665,7 @@ class NotificationNavigationResolver {
         case 'course_reactivated':
           return (NotificationNavigationResult.studentDashboard, null);
         case 'attendance_session_created':
+        case 'attendance_session_started':
           if (isArchived) {
             return (
               NotificationNavigationResult.archivedNotice,
@@ -670,6 +673,7 @@ class NotificationNavigationResolver {
             );
           }
           return (NotificationNavigationResult.studentAttendance, null);
+        case 'marks_published':
         case 'assessment_publish':
         case 'assessment_published':
           return (NotificationNavigationResult.studentMarks, null);
@@ -678,7 +682,7 @@ class NotificationNavigationResolver {
         case 'schedule_deleted':
           return (NotificationNavigationResult.studentSchedule, null);
         default:
-          return (NotificationNavigationResult.studentDashboard, null);
+          return (NotificationNavigationResult.unrecognizedType, null);
       }
     }
   }

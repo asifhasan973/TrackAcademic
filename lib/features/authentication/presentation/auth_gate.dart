@@ -1,8 +1,10 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:trackademic/core/models/user_role.dart';
 import 'package:trackademic/core/services/auth_service.dart';
-import 'package:trackademic/features/welcome/presentation/welcome_screen.dart';
-import 'package:trackademic/features/workspace/presentation/account_workspace_screen.dart';
+import 'package:trackademic/core/services/teacher_academic_service.dart';
+import 'package:trackademic/features/authentication/presentation/sign_in_screen.dart';
+import 'package:trackademic/features/ui_preview/presentation/role_workspace_screen.dart';
 
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
@@ -25,7 +27,7 @@ class AuthGate extends StatelessWidget {
         final user = snapshot.data;
 
         if (user == null) {
-          return const WelcomeScreen();
+          return const SignInScreen();
         }
 
         if (!user.emailVerified) {
@@ -47,20 +49,40 @@ class _WorkspaceLoader extends StatefulWidget {
 
 class _WorkspaceLoaderState extends State<_WorkspaceLoader> {
   static const _authService = AuthService();
+  static const _teacherAcademicService = TeacherAcademicService();
 
-  late final Future<AppUserProfile> _profileFuture;
+  late final Future<UserRole> _roleFuture;
 
   @override
   void initState() {
     super.initState();
+    _roleFuture = _resolveRole();
+  }
 
-    _profileFuture = _authService.loadCurrentProfile();
+  Future<UserRole> _resolveRole() async {
+    final profile = await _authService.loadCurrentProfile();
+    final roleString = profile.role?.trim().toLowerCase();
+    if (roleString == 'teacher') {
+      return UserRole.teacher;
+    } else if (roleString == 'student') {
+      return UserRole.student;
+    }
+
+    // Compatibility fallback for legacy profile without role:
+    try {
+      final courses = await _teacherAcademicService.loadMyCourses();
+      if (courses.isNotEmpty) {
+        return UserRole.teacher;
+      }
+    } catch (_) {}
+
+    return UserRole.student;
   }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<AppUserProfile>(
-      future: _profileFuture,
+    return FutureBuilder<UserRole>(
+      future: _roleFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
           return const _LoadingScreen();
@@ -70,7 +92,10 @@ class _WorkspaceLoaderState extends State<_WorkspaceLoader> {
           return _ProfileErrorScreen(error: snapshot.error);
         }
 
-        return AccountWorkspaceScreen(profile: snapshot.data!);
+        return RoleWorkspaceScreen(
+          role: snapshot.data!,
+          onSignOut: _authService.signOut,
+        );
       },
     );
   }

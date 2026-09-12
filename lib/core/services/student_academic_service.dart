@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -25,6 +27,107 @@ class StudentAcademicService {
     await _call('requestJoinCourse', {
       'joinCode': joinCode.trim().toUpperCase(),
     });
+  }
+
+  Stream<List<StudentAttendanceSession>> streamActiveSessions() {
+    final uid = _uid;
+    late StreamController<List<StudentAttendanceSession>> controller;
+    StreamSubscription? userSub;
+    final sessionSubs = <String, StreamSubscription>{};
+    final sessionsByCourse = <String, List<StudentAttendanceSession>>{};
+
+    void emitCombined() {
+      if (controller.isClosed) return;
+      final allSessions = <StudentAttendanceSession>[];
+      for (final list in sessionsByCourse.values) {
+        allSessions.addAll(list);
+      }
+      allSessions.sort((first, second) {
+        final firstEnd = first.endsAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final secondEnd =
+            second.endsAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return firstEnd.compareTo(secondEnd);
+      });
+      controller.add(allSessions);
+    }
+
+    controller = StreamController<List<StudentAttendanceSession>>.broadcast(
+      onListen: () {
+        userSub = _database
+            .collection('users')
+            .doc(uid)
+            .snapshots()
+            .listen(
+              (userDoc) {
+                final rawCourseIds = userDoc.data()?['courseIds'];
+                final courseIds = rawCourseIds is List
+                    ? rawCourseIds
+                          .whereType<String>()
+                          .map((id) => id.trim())
+                          .where((id) => id.isNotEmpty)
+                          .toSet()
+                    : <String>{};
+
+                final removed = sessionSubs.keys
+                    .where((id) => !courseIds.contains(id))
+                    .toList();
+                for (final id in removed) {
+                  sessionSubs[id]?.cancel();
+                  sessionSubs.remove(id);
+                  sessionsByCourse.remove(id);
+                }
+
+                if (courseIds.isEmpty) {
+                  emitCombined();
+                  return;
+                }
+
+                for (final courseId in courseIds) {
+                  if (!sessionSubs.containsKey(courseId)) {
+                    sessionSubs[courseId] = _database
+                        .collection('attendanceSessions')
+                        .where('courseId', isEqualTo: courseId)
+                        .snapshots()
+                        .listen(
+                          (snapshot) {
+                            final courseSessions = <StudentAttendanceSession>[];
+                            for (final doc in snapshot.docs) {
+                              final session = StudentAttendanceSession.fromMap(
+                                doc.id,
+                                doc.data(),
+                              );
+                              if (session.status == 'active') {
+                                courseSessions.add(session);
+                              }
+                            }
+                            sessionsByCourse[courseId] = courseSessions;
+                            emitCombined();
+                          },
+                          onError: (error) {
+                            if (!controller.isClosed) {
+                              controller.addError(error);
+                            }
+                          },
+                        );
+                  }
+                }
+              },
+              onError: (error) {
+                if (!controller.isClosed) controller.addError(error);
+              },
+            );
+      },
+      onCancel: () {
+        userSub?.cancel();
+        for (final sub in sessionSubs.values) {
+          sub.cancel();
+        }
+        sessionSubs.clear();
+        sessionsByCourse.clear();
+      },
+    );
+
+    return controller.stream;
   }
 
   Future<List<StudentAttendanceSession>> loadActiveSessions() async {
@@ -192,6 +295,7 @@ class StudentAttendanceSession {
   final String courseCode;
   final String courseName;
   final String classType;
+  final int durationMinutes;
   final String status;
   final bool requiresPasscode;
   final bool requiresGps;
@@ -205,6 +309,7 @@ class StudentAttendanceSession {
     required this.courseCode,
     required this.courseName,
     required this.classType,
+    required this.durationMinutes,
     required this.status,
     required this.requiresPasscode,
     required this.requiresGps,
@@ -225,24 +330,32 @@ class StudentAttendanceSession {
       return null;
     }
 
+    final start = toDate(data['startedAt']);
+    final end = toDate(data['endsAt']);
+    final duration =
+        (data['durationMinutes'] as num?)?.toInt() ??
+        (start != null && end != null ? end.difference(start).inMinutes : 0);
+
     return StudentAttendanceSession(
       id: id,
       courseId: data['courseId'] as String? ?? '',
       courseCode: data['courseCode'] as String? ?? '',
       courseName: data['courseName'] as String? ?? '',
       classType: data['classType'] as String? ?? '',
+      durationMinutes: duration,
       status: data['status'] as String? ?? '',
       requiresPasscode: data['requiresPasscode'] as bool? ?? false,
       requiresGps: data['requiresGps'] as bool? ?? false,
       allowLateEntry: data['allowLateEntry'] as bool? ?? false,
-      startedAt: toDate(data['startedAt']),
-      endsAt: toDate(data['endsAt']),
+      startedAt: start,
+      endsAt: end,
     );
   }
 }
 
 class StudentAttendanceRecord {
   final String id;
+  final String sessionId;
   final String courseCode;
   final String courseName;
   final String status;
@@ -251,6 +364,7 @@ class StudentAttendanceRecord {
 
   const StudentAttendanceRecord({
     required this.id,
+    required this.sessionId,
     required this.courseCode,
     required this.courseName,
     required this.status,
@@ -266,6 +380,9 @@ class StudentAttendanceRecord {
 
     return StudentAttendanceRecord(
       id: id,
+      sessionId:
+          data['sessionId'] as String? ??
+          (id.contains('_') ? id.split('_').first : ''),
       courseCode: data['courseCode'] as String? ?? '',
       courseName: data['courseName'] as String? ?? '',
       status: data['status'] as String? ?? '',

@@ -61,7 +61,7 @@ class _AccountWorkspaceScreenState extends State<AccountWorkspaceScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Trackademic'),
+        title: const Text('TrackAcademic'),
         actions: [
           IconButton(
             tooltip: 'Refresh',
