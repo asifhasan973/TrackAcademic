@@ -22,6 +22,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   final _institutionIdController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
+  final _teacherCodeController = TextEditingController();
 
   bool _hidePassword = true;
   bool _hideConfirmedPassword = true;
@@ -39,6 +40,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
     _institutionIdController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
+    _teacherCodeController.dispose();
     super.dispose();
   }
 
@@ -66,6 +68,9 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
         institutionId: _institutionIdController.text,
         password: _passwordController.text,
         role: _selectedRole,
+        inviteSecret: _selectedRole == 'teacher'
+            ? _teacherCodeController.text.trim()
+            : null,
       );
 
       if (!mounted) {
@@ -384,6 +389,29 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
                         ),
                       ],
                     ),
+
+                    if (_selectedRole == 'teacher') ...[
+                      const SizedBox(height: 18),
+                      TextFormField(
+                        controller: _teacherCodeController,
+                        textInputAction: TextInputAction.done,
+                        obscureText: true,
+                        decoration: _inputDecoration(
+                          label: 'Teacher Authorization Code',
+                          hint: 'Provided by department administrator',
+                          icon: Icons.vpn_key_outlined,
+                        ),
+                        validator: (value) {
+                          if (_selectedRole == 'teacher') {
+                            final code = value?.trim() ?? '';
+                            if (code.isEmpty) {
+                              return 'Please enter your teacher authorization code.';
+                            }
+                          }
+                          return null;
+                        },
+                      ),
+                    ],
 
                     const SizedBox(height: 26),
 

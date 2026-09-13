@@ -1,0 +1,25 @@
+{
+  "name": "trackacademic-backend",
+  "version": "1.0.0",
+  "description": "TrackAcademic trusted backend for Vercel Hobby",
+  "main": "lib/src/index.js",
+  "types": "lib/src/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "lint": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "firebase-admin": "^13.1.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  },
+  "private": true
+}

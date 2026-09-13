@@ -1,14 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import '../network/api_client.dart';
 
 class TeacherAcademicService {
   const TeacherAcademicService();
 
   FirebaseFirestore get _database => FirebaseFirestore.instance;
-
-  FirebaseFunctions get _functions =>
-      FirebaseFunctions.instanceFor(region: 'asia-south1');
 
   String get currentTeacherName {
     try {
@@ -273,6 +271,8 @@ class TeacherAcademicService {
     required double? latitude,
     required double? longitude,
     required double? radiusMeters,
+    double? accuracy,
+    int? timestamp,
     required bool allowLateEntry,
   }) async {
     final response = await _call('createAttendanceSession', {
@@ -285,6 +285,8 @@ class TeacherAcademicService {
       'latitude': latitude,
       'longitude': longitude,
       'radiusMeters': radiusMeters,
+      'accuracy': accuracy,
+      'timestamp': timestamp,
       'allowLateEntry': allowLateEntry,
     });
 
@@ -610,11 +612,21 @@ class TeacherAcademicService {
     Map<String, dynamic> data,
   ) async {
     try {
-      final callable = _functions.httpsCallable(name);
+      return await ApiClient.call(name, data);
+    } on ApiException catch (error) {
+      final msg = error.message.trim();
 
-      final result = await callable.call<Map<String, dynamic>>(data);
+      if (msg.isEmpty ||
+          msg == 'INTERNAL' ||
+          msg.toLowerCase() == 'internal' ||
+          msg.contains('[0]')) {
+        final fallback = (name == 'createSchedule' || name == 'updateSchedule')
+            ? 'Could not save this class. Please try again.'
+            : 'The operation failed. Please try again.';
+        throw TeacherAcademicServiceException(fallback);
+      }
 
-      return result.data;
+      throw TeacherAcademicServiceException(msg);
     } on FirebaseFunctionsException catch (error) {
       final msg = error.message?.trim();
 

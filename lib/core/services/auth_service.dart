@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import '../network/api_client.dart';
 
 class AuthService {
   const AuthService();
@@ -8,10 +9,6 @@ class AuthService {
   FirebaseAuth get _auth => FirebaseAuth.instance;
 
   FirebaseFirestore get _database => FirebaseFirestore.instance;
-
-  FirebaseFunctions get _functions {
-    return FirebaseFunctions.instanceFor(region: 'asia-south1');
-  }
 
   Stream<User?> get authStateChanges {
     return _auth.authStateChanges();
@@ -35,6 +32,7 @@ class AuthService {
     required String institutionId,
     required String password,
     required String role,
+    String? inviteSecret,
   }) async {
     final normalizedEmail = email.trim().toLowerCase();
     final normalizedInstitutionId = institutionId.trim().toUpperCase();
@@ -47,13 +45,18 @@ class AuthService {
     }
 
     try {
-      await _functions.httpsCallable('registerUser').call({
+      final registrationPayload = <String, dynamic>{
         'displayName': displayName.trim(),
         'email': normalizedEmail,
         'institutionId': normalizedInstitutionId,
         'password': password,
         'role': normalizedRole,
-      });
+      };
+      if (inviteSecret != null && inviteSecret.trim().isNotEmpty) {
+        registrationPayload['inviteSecret'] = inviteSecret.trim();
+      }
+
+      await ApiClient.call('registerUser', registrationPayload);
 
       final credential = await _auth.signInWithEmailAndPassword(
         email: normalizedEmail,
@@ -76,6 +79,8 @@ class AuthService {
       }
 
       return await loadCurrentProfile();
+    } on ApiException catch (error) {
+      throw AuthServiceException(error.message);
     } on FirebaseFunctionsException catch (error) {
       throw AuthServiceException(
         error.message ?? 'Registration failed. Please try again.',

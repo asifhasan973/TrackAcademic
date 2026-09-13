@@ -5,6 +5,7 @@ import 'package:trackademic/core/services/academic_service.dart';
 import 'package:trackademic/core/services/student_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/core/widgets/gps_diagnostic_dialog.dart';
 
 class StudentCourseDetailScreen extends StatefulWidget {
   final String courseId;
@@ -203,9 +204,17 @@ class _StudentCourseDetailScreenState extends State<StudentCourseDetailScreen>
       _reload();
     } on StudentAcademicServiceException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
-      );
+      if (GpsDiagnosticDialog.isGpsError(e.message)) {
+        GpsDiagnosticDialog.show(
+          context,
+          errorMessage: e.message,
+          onRetry: () => _submitAttendance(session),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

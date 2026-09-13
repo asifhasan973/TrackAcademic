@@ -162,12 +162,14 @@ class _StudentDashboardScreenState extends State<StudentDashboardScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text(
-                    'Today’s Classes',
-                    style: TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 22,
-                      fontWeight: FontWeight.w900,
+                  const Expanded(
+                    child: Text(
+                      'Today’s Classes',
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w900,
+                      ),
                     ),
                   ),
                   IconButton(
@@ -240,6 +242,7 @@ class _StudentDashboardScreenState extends State<StudentDashboardScreen> {
             ),
             const SizedBox(height: 4),
             Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
                 const Icon(
                   Icons.calendar_today_rounded,
@@ -247,12 +250,15 @@ class _StudentDashboardScreenState extends State<StudentDashboardScreen> {
                   color: AppColors.textSecondary,
                 ),
                 const SizedBox(width: 6),
-                Text(
-                  todayFormatted,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
+                Flexible(
+                  child: Text(
+                    todayFormatted,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ],

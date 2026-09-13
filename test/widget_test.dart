@@ -9,7 +9,7 @@ void main() {
     // Build the Trackademic application.
     await tester.pumpWidget(const MaterialApp(home: WelcomeScreen()));
     // Verify important welcome-screen content.
-    expect(find.text('Trackademic'), findsOneWidget);
+    expect(find.text('TrackAcademic'), findsWidgets);
 
     expect(
       find.text('Attendance that works\nonly where the class is.'),

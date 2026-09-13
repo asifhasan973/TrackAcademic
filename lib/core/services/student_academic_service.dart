@@ -4,14 +4,12 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:geolocator/geolocator.dart';
+import '../network/api_client.dart';
 
 class StudentAcademicService {
   const StudentAcademicService();
 
   FirebaseFirestore get _database => FirebaseFirestore.instance;
-
-  FirebaseFunctions get _functions =>
-      FirebaseFunctions.instanceFor(region: 'asia-south1');
 
   String get _uid {
     final user = FirebaseAuth.instance.currentUser;
@@ -223,12 +221,16 @@ class StudentAcademicService {
   }) async {
     double? latitude;
     double? longitude;
+    double? accuracy;
+    int? timestamp;
 
     if (session.requiresGps) {
       final position = await _getCurrentPosition();
 
       latitude = position.latitude;
       longitude = position.longitude;
+      accuracy = position.accuracy;
+      timestamp = position.timestamp.millisecondsSinceEpoch;
     }
 
     await _call('submitAttendance', {
@@ -236,6 +238,8 @@ class StudentAcademicService {
       'passcode': passcode,
       'latitude': latitude,
       'longitude': longitude,
+      'accuracy': accuracy,
+      'timestamp': timestamp,
     });
   }
 
@@ -266,9 +270,34 @@ class StudentAcademicService {
       );
     }
 
-    return Geolocator.getCurrentPosition(
-      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-    );
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 15),
+        ),
+      );
+      if (position.accuracy > 50) {
+        throw StudentAcademicServiceException(
+          'GPS signal quality is inconclusive (uncertainty ±${position.accuracy.round()}m). Please move outdoors or near a window and retry.',
+        );
+      }
+      return position;
+    } catch (e) {
+      if (e is StudentAcademicServiceException) rethrow;
+      final lastKnown = await Geolocator.getLastKnownPosition();
+      if (lastKnown != null) {
+        final age = DateTime.now().difference(lastKnown.timestamp);
+        // A last-known reading must NOT automatically pass solely because it is under 60 seconds old;
+        // it must also satisfy the accuracy requirement.
+        if (age.inSeconds < 60 && lastKnown.accuracy <= 50) {
+          return lastKnown;
+        }
+      }
+      throw const StudentAcademicServiceException(
+        'GPS signal quality is inconclusive. Please ensure GPS is enabled, move outdoors or near a window, and retry.',
+      );
+    }
   }
 
   Future<Map<String, dynamic>> _call(
@@ -276,11 +305,9 @@ class StudentAcademicService {
     Map<String, dynamic> data,
   ) async {
     try {
-      final result = await _functions
-          .httpsCallable(name)
-          .call<Map<String, dynamic>>(data);
-
-      return result.data;
+      return await ApiClient.call(name, data);
+    } on ApiException catch (error) {
+      throw StudentAcademicServiceException(error.message);
     } on FirebaseFunctionsException catch (error) {
       throw StudentAcademicServiceException(
         error.message ?? 'The operation failed.',

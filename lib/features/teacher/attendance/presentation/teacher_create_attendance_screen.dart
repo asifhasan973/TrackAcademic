@@ -849,9 +849,32 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
       );
     }
 
-    return Geolocator.getCurrentPosition(
-      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-    );
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 15),
+        ),
+      );
+      if (position.accuracy > 50) {
+        throw TeacherAcademicServiceException(
+          'GPS accuracy is insufficient (±${position.accuracy.round()}m). Please move outdoors or near a window and retry.',
+        );
+      }
+      return position;
+    } catch (e) {
+      if (e is TeacherAcademicServiceException) rethrow;
+      final lastKnown = await Geolocator.getLastKnownPosition();
+      if (lastKnown != null) {
+        final age = DateTime.now().difference(lastKnown.timestamp);
+        if (age.inSeconds < 60 && lastKnown.accuracy <= 50) {
+          return lastKnown;
+        }
+      }
+      throw const TeacherAcademicServiceException(
+        'Unable to get an accurate GPS reading. Please ensure GPS is enabled and try again outdoors.',
+      );
+    }
   }
 
   Future<void> _submit() async {
@@ -904,6 +927,8 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
         latitude: position?.latitude,
         longitude: position?.longitude,
         radiusMeters: radius,
+        accuracy: position?.accuracy,
+        timestamp: position?.timestamp.millisecondsSinceEpoch,
         allowLateEntry: _allowLateEntry,
       );
 

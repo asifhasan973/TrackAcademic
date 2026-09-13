@@ -20,6 +20,7 @@ module.exports = {
   ignorePatterns: [
     "/lib/**/*", // Ignore built files.
     "/generated/**/*", // Ignore generated files.
+    "/src/shared/**/*", // Synced shared backend modules.
   ],
   plugins: [
     "@typescript-eslint",
@@ -30,5 +31,9 @@ module.exports = {
     "import/no-unresolved": 0,
     "indent": ["error", 2],
     "require-jsdoc": "off",
+    "object-curly-spacing": "off",
+    "@typescript-eslint/no-explicit-any": "off",
+    "operator-linebreak": "off",
+    "max-len": ["warn", { "code": 120 }],
   },
 };
