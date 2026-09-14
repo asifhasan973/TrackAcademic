@@ -16,7 +16,8 @@ class ClassReminderReceiver : BroadcastReceiver() {
         val courseName = intent.getStringExtra("courseName") ?: ""
         val room = intent.getStringExtra("room") ?: ""
         val startTime = intent.getStringExtra("startTime") ?: ""
-        val dayOfWeek = intent.getIntExtra("dayOfWeek", -1)
+        val rawDayOfWeek = intent.getIntExtra("dayOfWeek", -1)
+        val dayOfWeek = if (rawDayOfWeek == 0) 7 else rawDayOfWeek
         val leadMinutes = intent.getIntExtra("leadMinutes", 15)
 
         val title = "Upcoming Class: $courseCode"

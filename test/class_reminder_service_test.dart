@@ -233,5 +233,187 @@ void main() {
       expect(service.activeReminders.isEmpty, isTrue);
       expect(cancelledInvocations.contains('sched_a'), isTrue);
     });
+
+    test('Sunday recurrence: normalizes dayIndex 0 to ISO 7 and re-arms for following week', () async {
+      final service = ClassReminderService();
+      await service.cancelAllReminders();
+
+      expect(ClassReminderService.toIsoWeekday(0), 7);
+      expect(ClassReminderService.toIsoWeekday(7), 7);
+      expect(ClassReminderService.toIsoWeekday(1), 1);
+
+      // Reference time: A Sunday at 12:00:00 (2026-09-13 is Sunday)
+      final sundayRef = DateTime(2026, 9, 13, 12, 0, 0);
+      expect(sundayRef.weekday, DateTime.sunday);
+
+      // Case A: Sunday class at 15:00 (in future today, reminder at 14:45)
+      final nextUpcoming = ClassReminderService.computeNextOccurrence(
+        targetWeekday: 0, // Firestore Sunday = 0
+        timeString: '15:00',
+        referenceTime: sundayRef,
+        leadMinutes: 15,
+      );
+      expect(nextUpcoming, isNotNull);
+      expect(nextUpcoming!.weekday, DateTime.sunday);
+      expect(nextUpcoming.year, 2026);
+      expect(nextUpcoming.month, 9);
+      expect(nextUpcoming.day, 13);
+      expect(nextUpcoming.hour, 15);
+      expect(nextUpcoming.minute, 0);
+
+      // Case B: Sunday class at 10:00 (reminder at 09:45 has passed relative to 12:00)
+      // Must re-arm for the following Sunday (2026-09-20)
+      final nextWeekRearm = ClassReminderService.computeNextOccurrence(
+        targetWeekday: 0, // Firestore Sunday = 0
+        timeString: '10:00',
+        referenceTime: sundayRef,
+        leadMinutes: 15,
+      );
+      expect(nextWeekRearm, isNotNull);
+      expect(nextWeekRearm!.weekday, DateTime.sunday);
+      expect(nextWeekRearm.year, 2026);
+      expect(nextWeekRearm.month, 9);
+      expect(nextWeekRearm.day, 20); // exactly 7 days later
+      expect(nextWeekRearm.hour, 10);
+      expect(nextWeekRearm.minute, 0);
+
+      // Test scheduling with Firestore dayIndex 0 at native boundary
+      final sundaySchedule = ClassScheduleEntry(
+        id: 'sched_sunday_0',
+        courseId: 'cse106',
+        courseCode: 'CSE 106',
+        courseName: 'Discrete Math',
+        teacherName: 'Dr. Sunday',
+        dayIndex: 0, // Firestore Sunday
+        day: 'Sunday',
+        startTime: '23:59',
+        endTime: '23:59',
+        room: 'Lab 5',
+        classType: 'Theory',
+        status: 'active',
+      );
+
+      await service.syncScheduleReminders([sundaySchedule]);
+      expect(service.activeReminders.length, 1);
+      final sundayReminder = service.activeReminders.first;
+      expect(sundayReminder.dayIndex, 7); // Normalized to ISO 7
+      expect(sundayReminder.nextOccurrence.weekday, DateTime.sunday);
+      expect(scheduledInvocations.last['dayOfWeek'], 7); // Native boundary received ISO 7
+    });
+
+    test('Join/leave followed by course update: does not resurrect left courses', () async {
+      final service = ClassReminderService();
+      await service.cancelAllReminders();
+
+      final schedA = ClassScheduleEntry(
+        id: 'sched_course_a',
+        courseId: 'course_a',
+        courseCode: 'CSE A',
+        courseName: 'Course A',
+        teacherName: 'Teacher A',
+        dayIndex: DateTime.now().weekday,
+        day: 'Today',
+        startTime: '23:58',
+        endTime: '23:59',
+        room: 'Room A',
+        classType: 'Theory',
+        status: 'active',
+      );
+
+      final schedB = ClassScheduleEntry(
+        id: 'sched_course_b',
+        courseId: 'course_b',
+        courseCode: 'CSE B',
+        courseName: 'Course B',
+        teacherName: 'Teacher B',
+        dayIndex: DateTime.now().weekday,
+        day: 'Today',
+        startTime: '23:59',
+        endTime: '23:59',
+        room: 'Room B',
+        classType: 'Theory',
+        status: 'active',
+      );
+
+      // Student enrolled in both Course A and Course B
+      await service.syncScheduleReminders([schedA, schedB]);
+      expect(service.activeReminders.length, 2);
+
+      // Student leaves Course B: only Course A remains active
+      await service.syncScheduleReminders([schedA]);
+      expect(service.activeReminders.length, 1);
+      expect(service.activeReminders.first.courseId, 'course_a');
+      expect(cancelledInvocations.contains('sched_course_b'), isTrue);
+
+      // Now an update occurs on Course A (e.g. room change or doc update)
+      final schedAUpdated = ClassScheduleEntry(
+        id: 'sched_course_a',
+        courseId: 'course_a',
+        courseCode: 'CSE A',
+        courseName: 'Course A Updated',
+        teacherName: 'Teacher A',
+        dayIndex: DateTime.now().weekday,
+        day: 'Today',
+        startTime: '23:58',
+        endTime: '23:59',
+        room: 'Room A-201',
+        classType: 'Theory',
+        status: 'active',
+      );
+
+      await service.syncScheduleReminders([schedAUpdated]);
+      expect(service.activeReminders.length, 1);
+      expect(service.activeReminders.first.courseId, 'course_a');
+      expect(service.activeReminders.first.room, 'Room A-201');
+
+      // Crucial: sched_course_b must NOT be resurrected
+      final activeCourseIds = service.activeReminders.map((r) => r.courseId).toSet();
+      expect(activeCourseIds.contains('course_b'), isFalse);
+    });
+
+    test('Access loss: course access loss or error cancels reminders and does not treat course as active', () async {
+      final service = ClassReminderService();
+      await service.cancelAllReminders();
+
+      final schedA = ClassScheduleEntry(
+        id: 'sched_permitted',
+        courseId: 'course_permitted',
+        courseCode: 'CSE 201',
+        courseName: 'Permitted Course',
+        teacherName: 'Teacher',
+        dayIndex: DateTime.now().weekday,
+        day: 'Today',
+        startTime: '23:58',
+        endTime: '23:59',
+        room: 'Room 101',
+        classType: 'Theory',
+        status: 'active',
+      );
+
+      final schedRevoked = ClassScheduleEntry(
+        id: 'sched_revoked',
+        courseId: 'course_revoked',
+        courseCode: 'CSE 202',
+        courseName: 'Revoked Course',
+        teacherName: 'Teacher',
+        dayIndex: DateTime.now().weekday,
+        day: 'Today',
+        startTime: '23:59',
+        endTime: '23:59',
+        room: 'Room 102',
+        classType: 'Theory',
+        status: 'active',
+      );
+
+      // Both courses initially active
+      await service.syncScheduleReminders([schedA, schedRevoked]);
+      expect(service.activeReminders.length, 2);
+
+      // Confirmed access loss: schedRevoked is removed as course access is lost
+      await service.syncScheduleReminders([schedA]);
+      expect(service.activeReminders.length, 1);
+      expect(service.activeReminders.first.courseId, 'course_permitted');
+      expect(cancelledInvocations.contains('sched_revoked'), isTrue);
+    });
   });
 }

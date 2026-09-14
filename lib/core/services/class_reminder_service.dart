@@ -62,16 +62,24 @@ class ClassReminderService {
   final Map<int, List<ClassScheduleEntry>> _chunkSchedules = {};
   final Map<String, StreamSubscription> _courseDocSubscriptions = {};
   final Map<String, bool> _courseActiveMap = {};
+  final Set<String> _currentEnrolledCourseIds = <String>{};
 
   StreamSubscription? _userSubscription;
   StreamSubscription? _coursesSubscription;
   final List<StreamSubscription> _scheduleSubscriptions = [];
   String? _activeUserId;
   int _syncGeneration = 0;
+  int _subscriptionEpoch = 0;
+  int _scheduleQueryEpoch = 0;
 
   /// Current active scheduled reminders in memory
   List<ScheduledClassReminder> get activeReminders =>
       List.unmodifiable(_activeReminders.values);
+
+  /// Converts Firestore dayIndex (0=Sunday..6=Saturday) to ISO weekday (1=Monday..7=Sunday).
+  static int toIsoWeekday(int dayIndex) {
+    return dayIndex == 0 ? 7 : dayIndex;
+  }
 
   /// Starts listening to timetable streams for the authorized user and their enrolled/taught courses.
   void startScheduleSync(String userId, String role) {
@@ -143,22 +151,29 @@ class ClassReminderService {
   void _updateStudentCourseListeners(List<String> enrolledIds, int generation) {
     if (_syncGeneration != generation || _activeUserId == null) return;
 
-    // Cancel subscriptions for courses that student unenrolled from
-    final enrolledSet = enrolledIds.toSet();
-    final toRemove = _courseDocSubscriptions.keys.where((id) => !enrolledSet.contains(id)).toList();
+    final currentEpoch = ++_subscriptionEpoch;
+
+    // Maintain authoritative enrollment set in service state
+    _currentEnrolledCourseIds.clear();
+    _currentEnrolledCourseIds.addAll(enrolledIds);
+
+    // Cancel and remove subscriptions for courses student is no longer enrolled in
+    final toRemove = _courseDocSubscriptions.keys
+        .where((id) => !_currentEnrolledCourseIds.contains(id))
+        .toList();
     for (final id in toRemove) {
       _courseDocSubscriptions[id]?.cancel();
       _courseDocSubscriptions.remove(id);
       _courseActiveMap.remove(id);
     }
 
-    if (enrolledIds.isEmpty) {
+    if (_currentEnrolledCourseIds.isEmpty) {
       _listenToSchedules([], generation);
       return;
     }
 
     // Subscribe to individual permitted course documents to observe archive/active changes
-    for (final courseId in enrolledIds) {
+    for (final courseId in _currentEnrolledCourseIds) {
       if (!_courseDocSubscriptions.containsKey(courseId)) {
         final sub = _database
             .collection('courses')
@@ -166,19 +181,30 @@ class ClassReminderService {
             .snapshots()
             .listen(
           (docSnap) {
-            if (_syncGeneration != generation) return;
+            // Invalidate obsolete callbacks when generation or enrollment changed
+            if (_syncGeneration != generation || _activeUserId == null) return;
+            if (!_currentEnrolledCourseIds.contains(courseId)) return;
+
             final isActive = docSnap.exists && (docSnap.data()?['isActive'] == true);
             _courseActiveMap[courseId] = isActive;
 
-            // Compute active permitted courses
-            final activeIds = enrolledIds.where((id) => _courseActiveMap[id] == true).toList();
+            // Reconcile using authoritative enrollment set in service state, NOT captured historical lists
+            final activeIds = _currentEnrolledCourseIds
+                .where((id) => _courseActiveMap[id] == true)
+                .toList();
             _listenToSchedules(activeIds, generation);
           },
           onError: (e) {
-            debugPrint('[ClassReminderService] Course doc stream error ($courseId): $e');
-            // Assume active if error occurs or fallback
-            _courseActiveMap[courseId] = true;
-            final activeIds = enrolledIds.where((id) => _courseActiveMap[id] != false).toList();
+            debugPrint('[ClassReminderService] Course access/doc stream error ($courseId): $e');
+            if (_syncGeneration != generation || _activeUserId == null) return;
+            if (!_currentEnrolledCourseIds.contains(courseId)) return;
+
+            // A course permission/read error must NOT be treated as proof that course is active;
+            // cancel reminders on confirmed access loss.
+            _courseActiveMap[courseId] = false;
+            final activeIds = _currentEnrolledCourseIds
+                .where((id) => _courseActiveMap[id] == true)
+                .toList();
             _listenToSchedules(activeIds, generation);
           },
         );
@@ -186,12 +212,16 @@ class ClassReminderService {
       }
     }
 
-    // Trigger initial schedule fetch with whatever active courses are already known
-    final activeIds = enrolledIds.where((id) => _courseActiveMap[id] != false).toList();
+    // Trigger reconciliation with known active courses from authoritative enrollment state
+    final activeIds = _currentEnrolledCourseIds
+        .where((id) => _courseActiveMap[id] == true)
+        .toList();
     _listenToSchedules(activeIds, generation);
   }
 
   void _listenToSchedules(List<String> courseIds, int generation) {
+    final queryEpoch = ++_scheduleQueryEpoch;
+
     for (final sub in _scheduleSubscriptions) {
       sub.cancel();
     }
@@ -213,7 +243,7 @@ class ClassReminderService {
           .snapshots()
           .listen(
         (snap) {
-          if (_syncGeneration != generation || _activeUserId == null) return;
+          if (_syncGeneration != generation || _scheduleQueryEpoch != queryEpoch || _activeUserId == null) return;
           final entries = snap.docs
               .map((d) => ClassScheduleEntry.fromMap(d.id, d.data()))
               .toList();
@@ -223,7 +253,13 @@ class ClassReminderService {
           _chunkSchedules[chunkIndex] = entries;
           _reconcileAggregatedChunks(generation);
         },
-        onError: (e) => debugPrint('[ClassReminderService] Schedule query chunk $chunkIndex error: $e'),
+        onError: (e) {
+          debugPrint('[ClassReminderService] Schedule query chunk $chunkIndex error: $e');
+          if (_syncGeneration != generation || _scheduleQueryEpoch != queryEpoch || _activeUserId == null) return;
+          // On access loss or read failure, clear this chunk's schedules
+          _chunkSchedules[chunkIndex] = [];
+          _reconcileAggregatedChunks(generation);
+        },
       );
       _scheduleSubscriptions.add(sub);
     }
@@ -253,12 +289,14 @@ class ClassReminderService {
     }
     _courseDocSubscriptions.clear();
     _courseActiveMap.clear();
+    _currentEnrolledCourseIds.clear();
 
     for (final sub in _scheduleSubscriptions) {
       sub.cancel();
     }
     _scheduleSubscriptions.clear();
     _chunkSchedules.clear();
+    _scheduleQueryEpoch++;
   }
 
   /// Stops timetable sync and cancels all subscriptions and reminders (e.g. on logout).
@@ -289,8 +327,9 @@ class ClassReminderService {
       if (schedule.status != 'active' && schedule.status != 'scheduled') continue;
       newScheduleIds.add(schedule.id);
 
+      final isoWeekday = toIsoWeekday(schedule.dayIndex);
       final nextClass = _computeNextOccurrence(
-        targetWeekday: schedule.dayIndex,
+        targetWeekday: isoWeekday,
         timeString: schedule.startTime,
         referenceTime: now,
       );
@@ -307,7 +346,7 @@ class ClassReminderService {
           courseName: schedule.courseName,
           room: schedule.room,
           startTime: schedule.startTime,
-          dayIndex: schedule.dayIndex,
+          dayIndex: isoWeekday,
           nextOccurrence: nextClass,
           reminderTime: reminderTime,
         );
@@ -325,7 +364,7 @@ class ClassReminderService {
               'courseName': schedule.courseName,
               'room': schedule.room,
               'startTime': schedule.startTime,
-              'dayOfWeek': schedule.dayIndex,
+              'dayOfWeek': isoWeekday,
               'leadMinutes': 15,
               'triggerTimeMillis': reminderTime.millisecondsSinceEpoch,
             });
@@ -412,10 +451,10 @@ class ClassReminderService {
     }
   }
 
-  /// Computes the next upcoming DateTime for a class given weekday (1=Mon ... 7=Sun) and 'HH:mm'.
+  /// Computes the next upcoming DateTime for a class given weekday (1=Mon ... 7=Sun, or Firestore 0=Sun) and 'HH:mm'.
   /// Recalculates timezone-aware next occurrence, advancing by 7 days if the reminder time
   /// for the current week has already passed.
-  DateTime? _computeNextOccurrence({
+  static DateTime? computeNextOccurrence({
     required int targetWeekday,
     required String timeString,
     required DateTime referenceTime,
@@ -428,7 +467,8 @@ class ClassReminderService {
     final minute = int.tryParse(parts[1]);
     if (hour == null || minute == null) return null;
 
-    var daysUntil = (targetWeekday - referenceTime.weekday) % 7;
+    final normalizedDay = toIsoWeekday(targetWeekday);
+    var daysUntil = (normalizedDay - referenceTime.weekday) % 7;
     if (daysUntil < 0) daysUntil += 7;
 
     final candidate = DateTime(
@@ -448,5 +488,18 @@ class ClassReminderService {
 
     return candidate;
   }
+
+  DateTime? _computeNextOccurrence({
+    required int targetWeekday,
+    required String timeString,
+    required DateTime referenceTime,
+    int leadMinutes = 15,
+  }) =>
+      computeNextOccurrence(
+        targetWeekday: targetWeekday,
+        timeString: timeString,
+        referenceTime: referenceTime,
+        leadMinutes: leadMinutes,
+      );
 }
 

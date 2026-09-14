@@ -82,7 +82,8 @@ class MainActivity : FlutterActivity() {
                             val courseName = call.argument<String>("courseName") ?: ""
                             val room = call.argument<String>("room") ?: ""
                             val startTime = call.argument<String>("startTime") ?: ""
-                            val dayOfWeek = (call.argument<Number>("dayOfWeek"))?.toInt() ?: -1
+                            val rawDay = (call.argument<Number>("dayOfWeek"))?.toInt() ?: -1
+                            val dayOfWeek = if (rawDay == 0) 7 else rawDay
                             val leadMinutes = (call.argument<Number>("leadMinutes"))?.toInt() ?: 15
                             val triggerTimeMillis = (call.argument<Number>("triggerTimeMillis"))?.toLong() ?: 0L
 

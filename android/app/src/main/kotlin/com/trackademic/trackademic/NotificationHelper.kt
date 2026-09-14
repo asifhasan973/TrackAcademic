@@ -113,8 +113,11 @@ object NotificationHelper {
         calendar.timeInMillis = referenceMillis
         val currentWeekday = calendar.get(Calendar.DAY_OF_WEEK)
 
+        // Normalize Firestore 0=Sunday to 7
+        val normalizedDay = if (dayOfWeek == 0) 7 else dayOfWeek
+
         // Map ISO dayOfWeek (1=Mon ... 7=Sun) to java.util.Calendar day (Calendar.SUNDAY=1 ... Calendar.SATURDAY=7)
-        val targetCalDay = when (dayOfWeek) {
+        val targetCalDay = when (normalizedDay) {
             1 -> Calendar.MONDAY
             2 -> Calendar.TUESDAY
             3 -> Calendar.WEDNESDAY
@@ -160,6 +163,7 @@ object NotificationHelper {
             return false
         }
 
+        val normalizedDay = if (dayOfWeek == 0) 7 else dayOfWeek
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return false
         val intent = Intent(context, ClassReminderReceiver::class.java).apply {
             action = "com.trackademic.ACTION_CLASS_REMINDER"
@@ -170,7 +174,7 @@ object NotificationHelper {
             putExtra("courseName", courseName)
             putExtra("room", room)
             putExtra("startTime", startTime)
-            putExtra("dayOfWeek", dayOfWeek)
+            putExtra("dayOfWeek", normalizedDay)
             putExtra("leadMinutes", leadMinutes)
             putExtra("triggerTimeMillis", triggerTimeMillis)
         }
@@ -208,7 +212,7 @@ object NotificationHelper {
                 courseName,
                 room,
                 startTime,
-                dayOfWeek,
+                normalizedDay,
                 leadMinutes,
                 triggerTimeMillis
             )
@@ -275,7 +279,8 @@ object NotificationHelper {
                 try {
                     val obj = JSONObject(jsonStr)
                     val triggerTime = obj.getLong("triggerTimeMillis")
-                    val dayOfWeek = obj.optInt("dayOfWeek", -1)
+                    val rawDayOfWeek = obj.optInt("dayOfWeek", -1)
+                    val dayOfWeek = if (rawDayOfWeek == 0) 7 else rawDayOfWeek
                     val leadMinutes = obj.optInt("leadMinutes", 15)
                     val startTime = obj.optString("startTime", "")
 
