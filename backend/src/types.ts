@@ -17,7 +17,8 @@ export type ErrorCode =
   | "internal"
   | "unavailable"
   | "data-loss"
-  | "unauthenticated";
+  | "unauthenticated"
+  | "conflict";
 
 export class BackendError extends Error {
   public readonly code: ErrorCode;
@@ -46,6 +47,7 @@ export class BackendError extends Error {
         return 404;
       case "already-exists":
       case "aborted":
+      case "conflict":
         return 409;
       case "resource-exhausted":
         return 429;

@@ -4,6 +4,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:trackademic/core/services/auth_service.dart';
 import 'package:trackademic/features/student/courses/presentation/student_course_detail_screen.dart';
 import 'package:trackademic/features/teacher/courses/presentation/teacher_courses_screen.dart';
 
@@ -24,11 +26,18 @@ class PushNotificationService {
   factory PushNotificationService() => _instance;
   PushNotificationService._internal();
 
+  static const MethodChannel _platformChannel =
+      MethodChannel('com.trackademic/notification_channel');
+
   final FirebaseMessaging _fcm = FirebaseMessaging.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   String? _currentToken;
   String? _boundUserId;
+
+  Map<String, dynamic>? _pendingPayload;
+  bool _isAppReady = false;
+  final Set<int> _displayedNotificationIds = <int>{};
 
   /// Hashes token into a safe Firestore document ID
   String _tokenDocId(String token) {
@@ -38,7 +47,7 @@ class PushNotificationService {
     return clean.length > 40 ? clean.substring(0, 40) : clean;
   }
 
-  /// Initializes FCM listeners, background handler, and foreground handlers
+  /// Initializes FCM listeners, background handler, and native platform notification channels
   Future<void> initialize() async {
     if (kIsWeb) return;
 
@@ -51,6 +60,29 @@ class PushNotificationService {
         sound: true,
       );
 
+      // Listen for notification taps originating from native Kotlin Activity
+      _platformChannel.setMethodCallHandler((call) async {
+        if (call.method == 'onNotificationTapped') {
+          final payload = Map<String, dynamic>.from(call.arguments as Map);
+          debugPrint('[PushNotificationService] Native onNotificationTapped: $payload');
+          if (_isAppReady) {
+            handleNotificationPayload(payload);
+          } else {
+            _pendingPayload = payload;
+          }
+        }
+      });
+
+      // Check if launched with a pending native notification intent
+      try {
+        final initialNativePayload = await _platformChannel
+            .invokeMethod<Map<dynamic, dynamic>>('getPendingNotificationPayload');
+        if (initialNativePayload != null && initialNativePayload.isNotEmpty) {
+          _pendingPayload = Map<String, dynamic>.from(initialNativePayload);
+          debugPrint('[PushNotificationService] Retrieved native pending payload: $_pendingPayload');
+        }
+      } catch (_) {}
+
       // Listen for token refreshes
       _fcm.onTokenRefresh.listen((newToken) async {
         _currentToken = newToken;
@@ -59,30 +91,44 @@ class PushNotificationService {
         }
       });
 
-      // Foreground message listener
+      // Foreground message listener: show real system notification + SnackBar
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
         debugPrint(
           '[PushNotificationService] Foreground message: ${message.notification?.title}',
         );
-        _showForegroundNotificationBanner(message);
+        _handleForegroundMessage(message);
       });
 
       // Background notification tap listener
       FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
         debugPrint('[PushNotificationService] Opened from background notification');
-        handleNotificationPayload(message.data);
+        if (_isAppReady) {
+          handleNotificationPayload(message.data);
+        } else {
+          _pendingPayload = message.data;
+        }
       });
 
-      // Check if launched from terminated state via notification
+      // Check if launched from terminated state via FCM
       final initialMessage = await _fcm.getInitialMessage();
       if (initialMessage != null) {
-        debugPrint('[PushNotificationService] App launched from terminated state');
-        Future.delayed(const Duration(milliseconds: 800), () {
-          handleNotificationPayload(initialMessage.data);
-        });
+        debugPrint('[PushNotificationService] App launched from terminated state via FCM');
+        _pendingPayload = initialMessage.data;
       }
     } catch (e) {
       debugPrint('[PushNotificationService] Initialization error: $e');
+    }
+  }
+
+  /// Notifies the push service that navigation, auth, and profile are ready to handle pending targets.
+  void onAppReady(BuildContext context, AppUserProfile profile) {
+    _isAppReady = true;
+    if (_pendingPayload != null) {
+      final payload = _pendingPayload!;
+      _pendingPayload = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        handleNotificationPayload(payload, targetContext: context);
+      });
     }
   }
 
@@ -169,6 +215,38 @@ class PushNotificationService {
 
     _boundUserId = null;
     _currentToken = null;
+    _isAppReady = false;
+    _pendingPayload = null;
+  }
+
+  void _handleForegroundMessage(RemoteMessage message) {
+    final title = message.notification?.title ?? 'TrackAcademic';
+    final body = message.notification?.body ?? '';
+    final notifId = (message.data['notificationId'] ?? message.messageId ?? title).hashCode;
+
+    // Show real Android system notification without duplicate stacking
+    if (!_displayedNotificationIds.contains(notifId)) {
+      _displayedNotificationIds.add(notifId);
+      if (_displayedNotificationIds.length > 100) {
+        _displayedNotificationIds.remove(_displayedNotificationIds.first);
+      }
+
+      if (!kIsWeb) {
+        try {
+          _platformChannel.invokeMethod('showNotification', {
+            'id': notifId,
+            'title': title,
+            'body': body,
+            'payload': message.data,
+          });
+        } catch (e) {
+          debugPrint('[PushNotificationService] Failed to post system notification: $e');
+        }
+      }
+    }
+
+    // Also display in-app banner for immediate tapping
+    _showForegroundNotificationBanner(message);
   }
 
   void _showForegroundNotificationBanner(RemoteMessage message) {
@@ -198,13 +276,25 @@ class PushNotificationService {
     );
   }
 
-  void handleNotificationPayload(Map<String, dynamic> data) {
-    final context = navigatorKey.currentContext;
-    if (context == null) return;
+  /// Routes notification action payloads to the appropriate screen after checking authorization
+  void handleNotificationPayload(Map<String, dynamic> data, {BuildContext? targetContext}) async {
+    final context = targetContext ?? navigatorKey.currentContext;
+    if (context == null) {
+      _pendingPayload = data;
+      return;
+    }
 
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) {
-      debugPrint('[PushNotificationService] Sign-in gated: user not signed in.');
+      debugPrint('[PushNotificationService] Sign-in gated: user not signed in. Retaining pending payload.');
+      _pendingPayload = data;
+      return;
+    }
+
+    // Check intended recipient to avoid cross-user routing
+    final targetUserId = data['userId'] as String?;
+    if (targetUserId != null && targetUserId.isNotEmpty && targetUserId != currentUser.uid) {
+      debugPrint('[PushNotificationService] Recipient mismatch: target=$targetUserId, current=${currentUser.uid}');
       return;
     }
 
@@ -218,9 +308,19 @@ class PushNotificationService {
 
     try {
       switch (type) {
+        case 'class_reminder':
+          // Device-local class reminder tapped: open student or teacher schedule view
+          break;
+
         case 'attendance_session_created':
         case 'attendance_session_started':
           if (courseId.isNotEmpty) {
+            final exists = await _verifyCourseAccessible(courseId);
+            if (!context.mounted) return;
+            if (!exists) {
+              _showTargetUnavailableNotice(context, 'This attendance session is no longer active.');
+              return;
+            }
             Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (_) => StudentCourseDetailScreen(
@@ -246,8 +346,13 @@ class PushNotificationService {
           break;
 
         case 'join_request_approved':
-        case 'join_request_rejected':
           if (courseId.isNotEmpty) {
+            final exists = await _verifyCourseAccessible(courseId);
+            if (!context.mounted) return;
+            if (!exists) {
+              _showTargetUnavailableNotice(context, 'Course is not currently accessible.');
+              return;
+            }
             Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (_) => StudentCourseDetailScreen(
@@ -258,10 +363,21 @@ class PushNotificationService {
           }
           break;
 
+        case 'join_request_rejected':
+          // Rejection must NOT navigate to StudentCourseDetailScreen as student has no course permissions
+          _showJoinRequestRejectedNotice(context, data);
+          break;
+
         case 'marks_published':
         case 'assessment_publish':
         case 'assessment_published':
           if (courseId.isNotEmpty) {
+            final exists = await _verifyCourseAccessible(courseId);
+            if (!context.mounted) return;
+            if (!exists) {
+              _showTargetUnavailableNotice(context, 'This assessment is no longer accessible.');
+              return;
+            }
             Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (_) => StudentCourseDetailScreen(
@@ -280,5 +396,48 @@ class PushNotificationService {
     } catch (e) {
       debugPrint('[PushNotificationService] Navigation routing error: $e');
     }
+  }
+
+  Future<bool> _verifyCourseAccessible(String courseId) async {
+    try {
+      final doc = await _firestore.collection('courses').doc(courseId).get();
+      return doc.exists && doc.data()?['isActive'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _showJoinRequestRejectedNotice(BuildContext context, Map<String, dynamic> data) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.info_outline, color: Colors.orange),
+            SizedBox(width: 8),
+            Text('Join Request Status'),
+          ],
+        ),
+        content: const Text(
+          'Your request to join this course was not approved by the instructor. Please contact your instructor if you believe this is an error.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showTargetUnavailableNotice(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.grey.shade800,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 }

@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
+import crypto from "crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { getDb } from "../src/firebaseAdmin.js";
 import { verifyBearerToken } from "../src/middleware/auth.js";
@@ -168,49 +169,164 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ? body.data
         : body ?? {};
 
-    // Check idempotency if key provided
+    // Atomic operation-level idempotency protection
     const rawIdem = req.headers["x-idempotency-key"] || (payload && payload.idempotencyKey);
     const idempotencyKey = typeof rawIdem === "string" && rawIdem.trim().length > 0 ? rawIdem.trim() : null;
 
-    if (idempotencyKey && context.auth) {
-      try {
-        const db = getDb();
-        const existing = await db.collection("idempotencyKeys").doc(idempotencyKey).get();
-        if (existing.exists) {
-          const stored = existing.data();
-          if (stored && stored.status === "completed" && stored.uid === context.auth.uid) {
-            console.log(`[IDEMPOTENCY_HIT] Returning cached result for key ${idempotencyKey}`);
-            res.statusCode = 200;
-            res.setHeader("Content-Type", "application/json");
-            res.end(
-              JSON.stringify({
-                result: stored.result ?? {},
-                data: stored.result ?? {},
-              }),
+    let idemRef: FirebaseFirestore.DocumentReference | null = null;
+    let boundUid = "";
+    let payloadHash = "";
+
+    if (idempotencyKey) {
+      boundUid = context.auth?.uid
+        ? context.auth.uid
+        : `unauth_${payload?.email || payload?.institutionId || clientIp}`;
+
+      function canonicalize(obj: any): any {
+        if (obj === null || typeof obj !== "object") return obj;
+        if (Array.isArray(obj)) return obj.map(canonicalize);
+        const sortedKeys = Object.keys(obj)
+          .filter((k) => k !== "idempotencyKey")
+          .sort();
+        const result: Record<string, any> = {};
+        for (const key of sortedKeys) {
+          result[key] = canonicalize(obj[key]);
+        }
+        return result;
+      }
+
+      payloadHash = crypto
+        .createHash("sha256")
+        .update(JSON.stringify(canonicalize(payload || {})))
+        .digest("hex");
+
+      const db = getDb();
+      idemRef = db.collection("idempotencyKeys").doc(idempotencyKey);
+
+      let cachedResult: any = null;
+      let shouldExecute = false;
+
+      await db.runTransaction(async (t) => {
+        const doc = await t.get(idemRef!);
+        if (!doc.exists) {
+          t.set(idemRef!, {
+            idempotencyKey,
+            uid: boundUid,
+            operation,
+            payloadHash,
+            status: "pending",
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          shouldExecute = true;
+        } else {
+          const data = doc.data()!;
+          if (
+            data.uid !== boundUid ||
+            data.operation !== operation ||
+            data.payloadHash !== payloadHash
+          ) {
+            throw new BackendError(
+              "conflict",
+              "Idempotency key was previously used with a different operation or payload.",
             );
-            return;
+          }
+
+          if (data.status === "completed") {
+            cachedResult = data.result ?? {};
+          } else if (data.status === "pending") {
+            // Check if existing pending lock is stale (> 60s)
+            const createdMillis = data.createdAt?.toMillis?.() || Date.now();
+            if (Date.now() - createdMillis > 60000) {
+              t.update(idemRef!, {
+                status: "pending",
+                updatedAt: FieldValue.serverTimestamp(),
+              });
+              shouldExecute = true;
+            }
           }
         }
-      } catch (checkErr) {
-        console.warn("[IDEMPOTENCY_CHECK_WARN]", checkErr);
+      });
+
+      if (cachedResult !== null) {
+        console.log(`[IDEMPOTENCY_HIT] Returning cached result for key ${idempotencyKey}`);
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            result: cachedResult,
+            data: cachedResult,
+          }),
+        );
+        return;
+      }
+
+      if (!shouldExecute) {
+        // Another concurrent request with this key is currently executing; poll bounded
+        let resolved = false;
+        for (let wait = 0; wait < 7; wait++) {
+          await new Promise((r) => setTimeout(r, 500));
+          const pollDoc = await idemRef.get();
+          if (pollDoc.exists) {
+            const pollData = pollDoc.data();
+            if (pollData?.status === "completed") {
+              console.log(`[IDEMPOTENCY_AWAIT_HIT] Resolved concurrent request for key ${idempotencyKey}`);
+              res.statusCode = 200;
+              res.setHeader("Content-Type", "application/json");
+              res.end(
+                JSON.stringify({
+                  result: pollData.result ?? {},
+                  data: pollData.result ?? {},
+                }),
+              );
+              return;
+            }
+          }
+        }
+        throw new BackendError(
+          "conflict",
+          "A concurrent operation with this idempotency key is already in progress. Please retry.",
+        );
       }
     }
 
-    const result = await handlerFn(payload, context);
+    let result: any;
+    try {
+      result = await handlerFn(payload, context);
+    } catch (handlerErr) {
+      // Release pending reservation on business execution failure so retries can proceed
+      if (idemRef) {
+        await idemRef.delete().catch(() => {});
+      }
+      throw handlerErr;
+    }
 
-    if (idempotencyKey && context.auth) {
+    if (idemRef) {
       try {
-        const db = getDb();
-        await db.collection("idempotencyKeys").doc(idempotencyKey).set({
-          idempotencyKey,
-          operation,
-          status: "completed",
-          result: result ?? {},
-          createdAt: FieldValue.serverTimestamp(),
-          uid: context.auth.uid,
-        });
+        await idemRef.set(
+          {
+            idempotencyKey,
+            uid: boundUid,
+            operation,
+            payloadHash,
+            status: "completed",
+            result: result ?? {},
+            completedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
       } catch (storeErr) {
-        console.warn("[IDEMPOTENCY_STORE_WARN]", storeErr);
+        console.warn("[IDEMPOTENCY_STORE_WARN] Retrying idempotency cache save:", storeErr);
+        try {
+          await idemRef.set(
+            {
+              status: "completed",
+              result: result ?? {},
+              completedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true },
+          );
+        } catch (_) {}
       }
     }
 

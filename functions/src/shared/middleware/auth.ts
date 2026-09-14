@@ -1,4 +1,4 @@
-import { getAuthService, getDb, getMessagingService } from "../firebaseAdmin.js";
+import { getAuthService, getDb, getMessagingService, FieldValue } from "../firebaseAdmin.js";
 import { BackendError, RequestContext } from "../types.js";
 
 export async function verifyBearerToken(authHeader?: string): Promise<RequestContext["auth"]> {
@@ -392,9 +392,41 @@ export async function dispatchPushNotifications(
       }
     }
 
-    if (!messagesToSend.length) return;
+    if (!messagesToSend.length) {
+      const batch = database.batch();
+      for (const n of notifications) {
+        batch.set(
+          database.collection("notifications").doc(n.id),
+          {
+            deliveryStatus: "no_tokens",
+            dispatchedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+      }
+      await batch.commit().catch(() => {});
+      return;
+    }
+
+    // Mark deliveryStatus pending on notification records
+    const pendingBatch = database.batch();
+    for (const n of notifications) {
+      pendingBatch.set(
+        database.collection("notifications").doc(n.id),
+        {
+          deliveryStatus: "pending",
+          deliveryAttempts: FieldValue.increment(1),
+          lastDispatchedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    }
+    await pendingBatch.commit().catch(() => {});
 
     // Bounded delivery work: max 6 seconds to prevent serverless execution hangs
+    let totalSuccesses = 0;
+    let totalFailures = 0;
+
     await Promise.race([
       (async () => {
         for (let i = 0; i < messagesToSend.length; i += 500) {
@@ -403,7 +435,10 @@ export async function dispatchPushNotifications(
           const deadRefs: FirebaseFirestore.DocumentReference[] = [];
 
           response.responses.forEach((resp, idx) => {
-            if (!resp.success && resp.error) {
+            if (resp.success) {
+              totalSuccesses++;
+            } else if (resp.error) {
+              totalFailures++;
               const code = resp.error.code;
               if (
                 code === "messaging/invalid-registration-token" ||
@@ -429,7 +464,34 @@ export async function dispatchPushNotifications(
     ]).catch((err) => {
       console.warn("[FCM_DISPATCH_TIMEOUT_OR_ERR]", err);
     });
+
+    // Update final delivery status on notifications (best-effort, never guaranteed exactly-once)
+    const finalStatus =
+      totalSuccesses > 0
+        ? totalFailures > 0
+          ? "partial"
+          : "sent"
+        : totalFailures > 0
+        ? "failed"
+        : "sent";
+
+    const updateBatch = database.batch();
+    for (const n of notifications) {
+      updateBatch.set(
+        database.collection("notifications").doc(n.id),
+        {
+          deliveryStatus: finalStatus,
+          dispatchedAt: FieldValue.serverTimestamp(),
+          deliverySummary: {
+            successes: totalSuccesses,
+            failures: totalFailures,
+          },
+        },
+        { merge: true },
+      );
+    }
+    await updateBatch.commit().catch(() => {});
   } catch (err) {
-    console.error("[FCM] dispatchPushNotifications top-level error:", err);
+    console.error("[FCM] dispatchPushNotifications non-blocking error:", err);
   }
 }

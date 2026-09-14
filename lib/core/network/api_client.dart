@@ -24,6 +24,19 @@ abstract final class ApiClient {
     defaultValue: '',
   );
 
+  static const Set<String> _safeIdempotentOperations = {
+    'submitAttendance',
+    'createAttendanceSession',
+    'setAttendanceStatus',
+    'closeAttendanceSession',
+    'createCourse',
+    'requestJoinCourse',
+    'respondCourseJoinRequest',
+    'registerUser',
+    'saveAssessmentMarks',
+    'publishAssessment',
+  };
+
   static String get backendUrl {
     if (FirebaseEmulatorConfig.enabled) {
       return '';
@@ -116,7 +129,9 @@ abstract final class ApiClient {
       headers['X-Idempotency-Key'] = idempotencyKey;
     }
 
-    final canSafelyRetry = isQuery || idempotencyKey != null;
+    final isProtectedMutation =
+        idempotencyKey != null && _safeIdempotentOperations.contains(operation);
+    final canSafelyRetry = isQuery || isProtectedMutation;
     final maxAttempts = canSafelyRetry ? 2 : 1;
 
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {

@@ -267,7 +267,7 @@ class AuthService {
       debugPrint('[AuthService] Failed to unregister push token: $e');
     }
     try {
-      ClassReminderService().cancelAllReminders();
+      ClassReminderService().stopScheduleSync();
     } catch (_) {}
     return _auth.signOut();
   }

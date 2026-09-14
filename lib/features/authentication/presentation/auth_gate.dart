@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:trackademic/core/models/user_role.dart';
 import 'package:trackademic/core/services/auth_service.dart';
+import 'package:trackademic/core/services/class_reminder_service.dart';
 import 'package:trackademic/core/services/push_notification_service.dart';
 import 'package:trackademic/core/services/teacher_academic_service.dart';
 import 'package:trackademic/features/authentication/presentation/sign_in_screen.dart';
@@ -73,6 +74,14 @@ class _WorkspaceLoaderState extends State<_WorkspaceLoader> {
       }).catchError((e) {
         debugPrint('[AuthGate] FCM token registration error: $e');
       });
+
+      // Signal ready to process pending push targets
+      if (mounted) {
+        PushNotificationService().onAppReady(context, profile);
+      }
+
+      // Start zero-cost device-local class timetable reminders
+      ClassReminderService().startScheduleSync(uid, profile.role ?? 'student');
     }
 
     final roleString = profile.role?.trim().toLowerCase();
