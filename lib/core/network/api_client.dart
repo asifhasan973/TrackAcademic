@@ -25,16 +25,8 @@ abstract final class ApiClient {
   );
 
   static const Set<String> _safeIdempotentOperations = {
-    'submitAttendance',
-    'createAttendanceSession',
     'setAttendanceStatus',
     'closeAttendanceSession',
-    'createCourse',
-    'requestJoinCourse',
-    'respondCourseJoinRequest',
-    'registerUser',
-    'saveAssessmentMarks',
-    'publishAssessment',
   };
 
   static String get backendUrl {

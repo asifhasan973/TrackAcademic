@@ -10,10 +10,14 @@ import androidx.core.app.NotificationManagerCompat
 class ClassReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val scheduleId = intent.getStringExtra("scheduleId") ?: return
+        val courseId = intent.getStringExtra("courseId") ?: ""
+        val userId = intent.getStringExtra("userId") ?: ""
         val courseCode = intent.getStringExtra("courseCode") ?: "Class"
         val courseName = intent.getStringExtra("courseName") ?: ""
         val room = intent.getStringExtra("room") ?: ""
         val startTime = intent.getStringExtra("startTime") ?: ""
+        val dayOfWeek = intent.getIntExtra("dayOfWeek", -1)
+        val leadMinutes = intent.getIntExtra("leadMinutes", 15)
 
         val title = "Upcoming Class: $courseCode"
         val body = buildString {
@@ -26,6 +30,8 @@ class ClassReminderReceiver : BroadcastReceiver() {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("type", "class_reminder")
             putExtra("scheduleId", scheduleId)
+            putExtra("courseId", courseId)
+            putExtra("userId", userId)
             putExtra("courseCode", courseCode)
         }
 
@@ -54,7 +60,32 @@ class ClassReminderReceiver : BroadcastReceiver() {
             // POST_NOTIFICATIONS not granted
         }
 
-        // Clean up from SharedPreferences since it has fired
-        NotificationHelper.cancelClassReminder(context, scheduleId)
+        // Subsequent weekly recurrence: if this was a recurring timetable entry (dayOfWeek in 1..7),
+        // recalculate and schedule next week's occurrence with persisted recurrence metadata.
+        if (dayOfWeek in 1..7 && startTime.isNotEmpty()) {
+            val now = System.currentTimeMillis()
+            val nextTrigger = NotificationHelper.computeNextOccurrenceMillis(dayOfWeek, startTime, leadMinutes, now)
+            if (nextTrigger > now) {
+                NotificationHelper.scheduleClassReminder(
+                    context,
+                    scheduleId,
+                    courseId,
+                    userId,
+                    courseCode,
+                    courseName,
+                    room,
+                    startTime,
+                    dayOfWeek,
+                    leadMinutes,
+                    nextTrigger
+                )
+            } else {
+                NotificationHelper.cancelClassReminder(context, scheduleId)
+            }
+        } else {
+            // Non-recurring one-off reminder; clean up
+            NotificationHelper.cancelClassReminder(context, scheduleId)
+        }
     }
 }
+

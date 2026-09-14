@@ -203,10 +203,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const db = getDb();
       idemRef = db.collection("idempotencyKeys").doc(idempotencyKey);
 
-      let cachedResult: any = null;
-      let shouldExecute = false;
+      type IdempotencyDecision =
+        | { action: "execute" }
+        | { action: "cached"; result: any }
+        | { action: "in_progress" };
 
-      await db.runTransaction(async (t) => {
+      const decision: IdempotencyDecision = await db.runTransaction(async (t) => {
         const doc = await t.get(idemRef!);
         if (!doc.exists) {
           t.set(idemRef!, {
@@ -218,52 +220,58 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             createdAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp(),
           });
-          shouldExecute = true;
-        } else {
-          const data = doc.data()!;
-          if (
-            data.uid !== boundUid ||
-            data.operation !== operation ||
-            data.payloadHash !== payloadHash
-          ) {
-            throw new BackendError(
-              "conflict",
-              "Idempotency key was previously used with a different operation or payload.",
-            );
-          }
-
-          if (data.status === "completed") {
-            cachedResult = data.result ?? {};
-          } else if (data.status === "pending") {
-            // Check if existing pending lock is stale (> 60s)
-            const createdMillis = data.createdAt?.toMillis?.() || Date.now();
-            if (Date.now() - createdMillis > 60000) {
-              t.update(idemRef!, {
-                status: "pending",
-                updatedAt: FieldValue.serverTimestamp(),
-              });
-              shouldExecute = true;
-            }
-          }
+          return { action: "execute" };
         }
+
+        const data = doc.data()!;
+        if (
+          data.uid !== boundUid ||
+          data.operation !== operation ||
+          data.payloadHash !== payloadHash
+        ) {
+          throw new BackendError(
+            "conflict",
+            "Idempotency key was previously used with a different operation or payload.",
+          );
+        }
+
+        if (data.status === "completed") {
+          return { action: "cached", result: data.result ?? {} };
+        }
+
+        if (data.status === "uncertain") {
+          throw new BackendError(
+            "conflict",
+            "This operation previously executed with an uncertain outcome. Automatic rerun is blocked to prevent duplicate side effects.",
+          );
+        }
+
+        if (data.status === "failed") {
+          throw new BackendError(
+            "conflict",
+            "Previous execution with this idempotency key failed with possible partial side effects. Automatic rerun is blocked.",
+          );
+        }
+
+        // Pending operation in progress: do not blindly rerun after 60s
+        return { action: "in_progress" };
       });
 
-      if (cachedResult !== null) {
+      if (decision.action === "cached") {
         console.log(`[IDEMPOTENCY_HIT] Returning cached result for key ${idempotencyKey}`);
         res.statusCode = 200;
         res.setHeader("Content-Type", "application/json");
         res.end(
           JSON.stringify({
-            result: cachedResult,
-            data: cachedResult,
+            result: decision.result,
+            data: decision.result,
           }),
         );
         return;
       }
 
-      if (!shouldExecute) {
+      if (decision.action === "in_progress") {
         // Another concurrent request with this key is currently executing; poll bounded
-        let resolved = false;
         for (let wait = 0; wait < 7; wait++) {
           await new Promise((r) => setTimeout(r, 500));
           const pollDoc = await idemRef.get();
@@ -281,11 +289,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               );
               return;
             }
+            if (pollData?.status === "failed" || pollData?.status === "uncertain") {
+              throw new BackendError(
+                "conflict",
+                "The concurrent operation failed or resolved with an uncertain outcome.",
+              );
+            }
           }
         }
         throw new BackendError(
           "conflict",
-          "A concurrent operation with this idempotency key is already in progress. Please retry.",
+          "A concurrent operation with this idempotency key is already in progress. Please retry later.",
         );
       }
     }
@@ -293,15 +307,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let result: any;
     try {
       result = await handlerFn(payload, context);
-    } catch (handlerErr) {
-      // Release pending reservation on business execution failure so retries can proceed
+    } catch (handlerErr: any) {
+      // Do not delete a reservation on an error unless it is safe to conclude no side effects occurred.
+      // Record failed status to prevent blind retries from duplicating partial side effects.
       if (idemRef) {
-        await idemRef.delete().catch(() => {});
+        try {
+          await idemRef.set(
+            {
+              status: "failed",
+              error: handlerErr?.message || String(handlerErr),
+              failedAt: FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true },
+          );
+        } catch (_) {}
       }
       throw handlerErr;
     }
 
     if (idemRef) {
+      let stored = false;
       try {
         await idemRef.set(
           {
@@ -312,9 +338,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             status: "completed",
             result: result ?? {},
             completedAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
           },
           { merge: true },
         );
+        stored = true;
       } catch (storeErr) {
         console.warn("[IDEMPOTENCY_STORE_WARN] Retrying idempotency cache save:", storeErr);
         try {
@@ -323,6 +351,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               status: "completed",
               result: result ?? {},
               completedAt: FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true },
+          );
+          stored = true;
+        } catch (_) {}
+      }
+
+      // Handle success followed by result-storage failure as an uncertain outcome,
+      // not permission to execute the mutation again.
+      if (!stored) {
+        console.error("[IDEMPOTENCY_UNCERTAIN] Mutation succeeded but storing result failed. Recording uncertain status.");
+        try {
+          await idemRef.set(
+            {
+              status: "uncertain",
+              note: "Mutation executed successfully but saving result to cache failed",
+              updatedAt: FieldValue.serverTimestamp(),
             },
             { merge: true },
           );

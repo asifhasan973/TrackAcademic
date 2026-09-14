@@ -12,6 +12,8 @@ import android.media.RingtoneManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import java.util.Calendar
+import java.util.TimeZone
 import org.json.JSONObject
 
 object NotificationHelper {
@@ -96,13 +98,62 @@ object NotificationHelper {
         }
     }
 
+    fun computeNextOccurrenceMillis(
+        dayOfWeek: Int,
+        startTime: String,
+        leadMinutes: Int,
+        referenceMillis: Long
+    ): Long {
+        val parts = startTime.split(":")
+        if (parts.size < 2) return 0L
+        val hour = parts[0].toIntOrNull() ?: return 0L
+        val minute = parts[1].toIntOrNull() ?: return 0L
+
+        val calendar = Calendar.getInstance(TimeZone.getDefault())
+        calendar.timeInMillis = referenceMillis
+        val currentWeekday = calendar.get(Calendar.DAY_OF_WEEK)
+
+        // Map ISO dayOfWeek (1=Mon ... 7=Sun) to java.util.Calendar day (Calendar.SUNDAY=1 ... Calendar.SATURDAY=7)
+        val targetCalDay = when (dayOfWeek) {
+            1 -> Calendar.MONDAY
+            2 -> Calendar.TUESDAY
+            3 -> Calendar.WEDNESDAY
+            4 -> Calendar.THURSDAY
+            5 -> Calendar.FRIDAY
+            6 -> Calendar.SATURDAY
+            7 -> Calendar.SUNDAY
+            else -> return 0L
+        }
+
+        var daysUntil = (targetCalDay - currentWeekday) % 7
+        if (daysUntil < 0) daysUntil += 7
+
+        calendar.add(Calendar.DAY_OF_YEAR, daysUntil)
+        calendar.set(Calendar.HOUR_OF_DAY, hour)
+        calendar.set(Calendar.MINUTE, minute)
+        calendar.set(Calendar.SECOND, 0)
+        calendar.set(Calendar.MILLISECOND, 0)
+
+        calendar.add(Calendar.MINUTE, -leadMinutes)
+
+        if (calendar.timeInMillis <= referenceMillis) {
+            calendar.add(Calendar.DAY_OF_YEAR, 7)
+        }
+
+        return calendar.timeInMillis
+    }
+
     fun scheduleClassReminder(
         context: Context,
         scheduleId: String,
+        courseId: String = "",
+        userId: String = "",
         courseCode: String,
         courseName: String,
         room: String,
         startTime: String,
+        dayOfWeek: Int = -1,
+        leadMinutes: Int = 15,
         triggerTimeMillis: Long
     ): Boolean {
         if (triggerTimeMillis <= System.currentTimeMillis()) {
@@ -113,10 +164,14 @@ object NotificationHelper {
         val intent = Intent(context, ClassReminderReceiver::class.java).apply {
             action = "com.trackademic.ACTION_CLASS_REMINDER"
             putExtra("scheduleId", scheduleId)
+            putExtra("courseId", courseId)
+            putExtra("userId", userId)
             putExtra("courseCode", courseCode)
             putExtra("courseName", courseName)
             putExtra("room", room)
             putExtra("startTime", startTime)
+            putExtra("dayOfWeek", dayOfWeek)
+            putExtra("leadMinutes", leadMinutes)
             putExtra("triggerTimeMillis", triggerTimeMillis)
         }
 
@@ -143,8 +198,20 @@ object NotificationHelper {
                 alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTimeMillis, pendingIntent)
             }
 
-            // Persist to SharedPreferences for reboot recovery
-            saveReminderToPrefs(context, scheduleId, courseCode, courseName, room, startTime, triggerTimeMillis)
+            // Persist to SharedPreferences for reboot recovery & recurrence
+            saveReminderToPrefs(
+                context,
+                scheduleId,
+                courseId,
+                userId,
+                courseCode,
+                courseName,
+                room,
+                startTime,
+                dayOfWeek,
+                leadMinutes,
+                triggerTimeMillis
+            )
             return true
         } catch (e: Exception) {
             return false
@@ -208,18 +275,46 @@ object NotificationHelper {
                 try {
                     val obj = JSONObject(jsonStr)
                     val triggerTime = obj.getLong("triggerTimeMillis")
+                    val dayOfWeek = obj.optInt("dayOfWeek", -1)
+                    val leadMinutes = obj.optInt("leadMinutes", 15)
+                    val startTime = obj.optString("startTime", "")
+
                     if (triggerTime > now) {
                         scheduleClassReminder(
                             context,
                             scheduleId,
+                            obj.optString("courseId", ""),
+                            obj.optString("userId", ""),
                             obj.getString("courseCode"),
                             obj.getString("courseName"),
                             obj.getString("room"),
-                            obj.getString("startTime"),
+                            startTime,
+                            dayOfWeek,
+                            leadMinutes,
                             triggerTime
                         )
+                    } else if (dayOfWeek in 1..7 && startTime.isNotEmpty()) {
+                        // Recalculate next upcoming weekly occurrence timezone-aware
+                        val nextTrigger = computeNextOccurrenceMillis(dayOfWeek, startTime, leadMinutes, now)
+                        if (nextTrigger > now) {
+                            scheduleClassReminder(
+                                context,
+                                scheduleId,
+                                obj.optString("courseId", ""),
+                                obj.optString("userId", ""),
+                                obj.getString("courseCode"),
+                                obj.getString("courseName"),
+                                obj.getString("room"),
+                                startTime,
+                                dayOfWeek,
+                                leadMinutes,
+                                nextTrigger
+                            )
+                        } else {
+                            editor.remove(scheduleId)
+                        }
                     } else {
-                        // Expired, remove
+                        // Expired one-off reminder
                         editor.remove(scheduleId)
                     }
                 } catch (e: Exception) {
@@ -233,19 +328,27 @@ object NotificationHelper {
     private fun saveReminderToPrefs(
         context: Context,
         scheduleId: String,
+        courseId: String,
+        userId: String,
         courseCode: String,
         courseName: String,
         room: String,
         startTime: String,
+        dayOfWeek: Int,
+        leadMinutes: Int,
         triggerTimeMillis: Long
     ) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val json = JSONObject().apply {
             put("scheduleId", scheduleId)
+            put("courseId", courseId)
+            put("userId", userId)
             put("courseCode", courseCode)
             put("courseName", courseName)
             put("room", room)
             put("startTime", startTime)
+            put("dayOfWeek", dayOfWeek)
+            put("leadMinutes", leadMinutes)
             put("triggerTimeMillis", triggerTimeMillis)
         }
         prefs.edit().putString(scheduleId, json.toString()).apply()
@@ -256,3 +359,4 @@ object NotificationHelper {
         prefs.edit().remove(scheduleId).apply()
     }
 }
+

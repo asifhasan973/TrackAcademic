@@ -76,19 +76,27 @@ class MainActivity : FlutterActivity() {
                     "scheduleClassReminder" -> {
                         try {
                             val scheduleId = call.argument<String>("scheduleId") ?: ""
+                            val courseId = call.argument<String>("courseId") ?: ""
+                            val userId = call.argument<String>("userId") ?: ""
                             val courseCode = call.argument<String>("courseCode") ?: ""
                             val courseName = call.argument<String>("courseName") ?: ""
                             val room = call.argument<String>("room") ?: ""
                             val startTime = call.argument<String>("startTime") ?: ""
+                            val dayOfWeek = (call.argument<Number>("dayOfWeek"))?.toInt() ?: -1
+                            val leadMinutes = (call.argument<Number>("leadMinutes"))?.toInt() ?: 15
                             val triggerTimeMillis = (call.argument<Number>("triggerTimeMillis"))?.toLong() ?: 0L
 
                             val ok = NotificationHelper.scheduleClassReminder(
                                 applicationContext,
                                 scheduleId,
+                                courseId,
+                                userId,
                                 courseCode,
                                 courseName,
                                 room,
                                 startTime,
+                                dayOfWeek,
+                                leadMinutes,
                                 triggerTimeMillis
                             )
                             result.success(ok)

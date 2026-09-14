@@ -7,7 +7,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:trackademic/core/services/auth_service.dart';
 import 'package:trackademic/features/student/courses/presentation/student_course_detail_screen.dart';
+import 'package:trackademic/features/student/schedule/presentation/student_schedule_screen.dart';
 import 'package:trackademic/features/teacher/courses/presentation/teacher_courses_screen.dart';
+import 'package:trackademic/features/teacher/schedule/presentation/teacher_schedule_screen.dart';
 
 /// Top-level background message handler for FCM
 @pragma('vm:entry-point')
@@ -309,7 +311,42 @@ class PushNotificationService {
     try {
       switch (type) {
         case 'class_reminder':
-          // Device-local class reminder tapped: open student or teacher schedule view
+          // Device-local class reminder tapped: carry course/schedule & recipient info, verify access, and open appropriate timetable screen
+          if (courseId.isNotEmpty) {
+            final exists = await _verifyCourseAccessible(courseId);
+            if (!context.mounted) return;
+            if (!exists) {
+              _showTargetUnavailableNotice(context, 'This class schedule is no longer accessible.');
+              return;
+            }
+          }
+          try {
+            final profile = await const AuthService().loadCurrentProfile();
+            if (!context.mounted) return;
+            if ((profile.role ?? '').toLowerCase() == 'teacher') {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => Scaffold(
+                    appBar: AppBar(title: const Text('Class Timetable')),
+                    body: TeacherScheduleScreen(
+                      initialCourseId: courseId.isNotEmpty ? courseId : null,
+                    ),
+                  ),
+                ),
+              );
+            } else {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => Scaffold(
+                    appBar: AppBar(title: const Text('Class Timetable')),
+                    body: const StudentScheduleScreen(),
+                  ),
+                ),
+              );
+            }
+          } catch (e) {
+            debugPrint('[PushNotificationService] Failed to load profile for class_reminder routing: $e');
+          }
           break;
 
         case 'attendance_session_created':

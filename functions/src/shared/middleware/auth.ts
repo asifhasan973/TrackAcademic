@@ -348,9 +348,31 @@ export async function dispatchPushNotifications(
     );
 
     const messagesToSend: Array<{
+      notificationId: string;
       message: any;
       tokenRef: FirebaseFirestore.DocumentReference;
     }> = [];
+
+    interface NotifTrack {
+      id: string;
+      userId: string;
+      totalTokens: number;
+      fcmAccepted: number;
+      fcmRejected: number;
+      timedOutOrUnknown: boolean;
+    }
+
+    const notifMap = new Map<string, NotifTrack>();
+    for (const n of notifications) {
+      notifMap.set(n.id, {
+        id: n.id,
+        userId: n.payload.userId,
+        totalTokens: 0,
+        fcmAccepted: 0,
+        fcmRejected: 0,
+        timedOutOrUnknown: false,
+      });
+    }
 
     const seenTokenPerNotif = new Set<string>();
     for (const { uid, tokens } of tokenDocs) {
@@ -364,6 +386,7 @@ export async function dispatchPushNotifications(
           seenTokenPerNotif.add(dedupeKey);
 
           messagesToSend.push({
+            notificationId: notif.id,
             tokenRef: tokenItem.ref,
             message: {
               token: tokenItem.token,
@@ -388,6 +411,11 @@ export async function dispatchPushNotifications(
               },
             },
           });
+
+          const track = notifMap.get(notif.id);
+          if (track) {
+            track.totalTokens++;
+          }
         }
       }
     }
@@ -395,11 +423,23 @@ export async function dispatchPushNotifications(
     if (!messagesToSend.length) {
       const batch = database.batch();
       for (const n of notifications) {
+        const itemRef = database
+          .collection("notifications")
+          .doc(n.payload.userId)
+          .collection("items")
+          .doc(n.id);
+
         batch.set(
-          database.collection("notifications").doc(n.id),
+          itemRef,
           {
             deliveryStatus: "no_tokens",
             dispatchedAt: FieldValue.serverTimestamp(),
+            deliverySummary: {
+              tokensTargeted: 0,
+              fcmAccepted: 0,
+              fcmRejected: 0,
+              note: "Recipient has no registered device tokens. Best-effort delivery without automatic recovery.",
+            },
           },
           { merge: true },
         );
@@ -408,11 +448,17 @@ export async function dispatchPushNotifications(
       return;
     }
 
-    // Mark deliveryStatus pending on notification records
+    // Mark deliveryStatus pending on actual notification item records: notifications/{userId}/items/{notificationId}
     const pendingBatch = database.batch();
     for (const n of notifications) {
+      const itemRef = database
+        .collection("notifications")
+        .doc(n.payload.userId)
+        .collection("items")
+        .doc(n.id);
+
       pendingBatch.set(
-        database.collection("notifications").doc(n.id),
+        itemRef,
         {
           deliveryStatus: "pending",
           deliveryAttempts: FieldValue.increment(1),
@@ -424,67 +470,103 @@ export async function dispatchPushNotifications(
     await pendingBatch.commit().catch(() => {});
 
     // Bounded delivery work: max 6 seconds to prevent serverless execution hangs
-    let totalSuccesses = 0;
-    let totalFailures = 0;
+    let dispatchTimedOut = false;
+    let timeoutTimer: NodeJS.Timeout | null = null;
+
+    const sendWork = (async () => {
+      for (let i = 0; i < messagesToSend.length; i += 500) {
+        const chunk = messagesToSend.slice(i, i + 500);
+        const response = await messaging.sendEach(chunk.map((c) => c.message));
+        const deadRefs: FirebaseFirestore.DocumentReference[] = [];
+
+        response.responses.forEach((resp, idx) => {
+          const item = chunk[idx]!;
+          const track = notifMap.get(item.notificationId);
+          if (resp.success) {
+            if (track) track.fcmAccepted++;
+          } else if (resp.error) {
+            if (track) track.fcmRejected++;
+            const code = resp.error.code;
+            if (
+              code === "messaging/invalid-registration-token" ||
+              code === "messaging/registration-token-not-registered"
+            ) {
+              deadRefs.push(item.tokenRef);
+            }
+          }
+        });
+
+        if (deadRefs.length > 0) {
+          const batch = database.batch();
+          for (const ref of deadRefs) {
+            batch.delete(ref);
+          }
+          await batch.commit().catch(() => {});
+        }
+      }
+    })();
 
     await Promise.race([
-      (async () => {
-        for (let i = 0; i < messagesToSend.length; i += 500) {
-          const chunk = messagesToSend.slice(i, i + 500);
-          const response = await messaging.sendEach(chunk.map((c) => c.message));
-          const deadRefs: FirebaseFirestore.DocumentReference[] = [];
-
-          response.responses.forEach((resp, idx) => {
-            if (resp.success) {
-              totalSuccesses++;
-            } else if (resp.error) {
-              totalFailures++;
-              const code = resp.error.code;
-              if (
-                code === "messaging/invalid-registration-token" ||
-                code === "messaging/registration-token-not-registered"
-              ) {
-                deadRefs.push(chunk[idx]!.tokenRef);
-              }
-            }
-          });
-
-          if (deadRefs.length > 0) {
-            const batch = database.batch();
-            for (const ref of deadRefs) {
-              batch.delete(ref);
-            }
-            await batch.commit().catch(() => {});
-          }
-        }
-      })(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Push dispatch timed out after 6s")), 6000),
-      ),
+      sendWork,
+      new Promise<void>((_, reject) => {
+        timeoutTimer = setTimeout(() => {
+          dispatchTimedOut = true;
+          reject(new Error("Push dispatch timed out after 6s"));
+        }, 6000);
+      }),
     ]).catch((err) => {
       console.warn("[FCM_DISPATCH_TIMEOUT_OR_ERR]", err);
+    }).finally(() => {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
     });
 
-    // Update final delivery status on notifications (best-effort, never guaranteed exactly-once)
-    const finalStatus =
-      totalSuccesses > 0
-        ? totalFailures > 0
-          ? "partial"
-          : "sent"
-        : totalFailures > 0
-        ? "failed"
-        : "sent";
+    // If dispatch timed out, mark incomplete notifications as timedOutOrUnknown
+    if (dispatchTimedOut) {
+      for (const track of notifMap.values()) {
+        if (track.fcmAccepted + track.fcmRejected < track.totalTokens) {
+          track.timedOutOrUnknown = true;
+        }
+      }
+    }
 
+    // Write individual delivery outcome to each recipient's notification document:
+    // notifications/{userId}/items/{notificationId}
     const updateBatch = database.batch();
-    for (const n of notifications) {
+    for (const track of notifMap.values()) {
+      let finalStatus: string;
+      if (track.totalTokens === 0) {
+        finalStatus = "no_tokens";
+      } else if (track.timedOutOrUnknown && track.fcmAccepted === 0) {
+        // Timeout or unknown outcome must NEVER become "sent"
+        finalStatus = "timed_out";
+      } else if (track.fcmAccepted > 0 && track.fcmRejected > 0) {
+        finalStatus = "partial";
+      } else if (track.fcmAccepted > 0 && track.fcmRejected === 0) {
+        finalStatus = track.timedOutOrUnknown ? "partial" : "sent";
+      } else if (track.fcmRejected > 0 && track.fcmAccepted === 0) {
+        finalStatus = "failed";
+      } else {
+        finalStatus = "unknown";
+      }
+
+      const itemRef = database
+        .collection("notifications")
+        .doc(track.userId)
+        .collection("items")
+        .doc(track.id);
+
       updateBatch.set(
-        database.collection("notifications").doc(n.id),
+        itemRef,
         {
           deliveryStatus: finalStatus,
           dispatchedAt: FieldValue.serverTimestamp(),
           deliverySummary: {
-            successes: totalSuccesses,
-            failures: totalFailures,
+            tokensTargeted: track.totalTokens,
+            fcmAccepted: track.fcmAccepted,
+            fcmRejected: track.fcmRejected,
+            timedOutOrUnknown: track.timedOutOrUnknown,
+            fcmDispatched: track.fcmAccepted > 0,
+            note: "Best-effort delivery: FCM acceptance confirms cloud dispatch, not guaranteed physical device receipt. Automatic background recovery is omitted on zero-cost infrastructure to avoid duplicate pushes.",
           },
         },
         { merge: true },
