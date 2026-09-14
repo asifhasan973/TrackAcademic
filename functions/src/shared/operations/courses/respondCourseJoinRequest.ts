@@ -2,6 +2,7 @@ import { getDb, FieldValue } from "../../firebaseAdmin.js";
 import {
   requireActiveTeacher,
   prepareNotifications,
+  dispatchPushNotifications,
 } from "../../middleware/auth.js";
 import {
   BackendError,
@@ -35,7 +36,7 @@ export async function respondCourseJoinRequest(
   const database = getDb();
   const requestReference = database.collection("courseJoinRequests").doc(requestId);
 
-  return await database.runTransaction(async (transaction) => {
+  const result = await database.runTransaction(async (transaction) => {
     const joinRequest = await transaction.get(requestReference);
     const requestData = joinRequest.data();
 
@@ -179,6 +180,18 @@ export async function respondCourseJoinRequest(
 
     return {
       success: true,
+      _notifications: notifItems.map((item) => ({
+        id: item.id,
+        payload: item.payload,
+      })),
     };
   });
+
+  if (result._notifications && result._notifications.length > 0) {
+    await dispatchPushNotifications(database, result._notifications).catch((e) =>
+      console.warn("[FCM] Join decision push dispatch warning:", e),
+    );
+  }
+
+  return { success: true };
 }

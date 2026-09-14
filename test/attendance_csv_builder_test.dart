@@ -174,6 +174,40 @@ void main() {
       expect(memorySaved[filename], contains('TEST101'));
       expect(memorySaved[filename], contains('ID-001'));
     });
+
+    test('escapes spreadsheet formula injection prefixes (=, +, -, @, \\t, \\r)', () {
+      expect(AttendanceCsvBuilder.escapeField('=1+1'), "'=1+1");
+      expect(AttendanceCsvBuilder.escapeField('+cmd|calc'), "'+cmd|calc");
+      expect(AttendanceCsvBuilder.escapeField('-100'), "'-100");
+      expect(AttendanceCsvBuilder.escapeField('@SUM(A1)'), "'@SUM(A1)");
+      expect(AttendanceCsvBuilder.escapeField('\tTabInjection'), "'\tTabInjection");
+    });
+
+    test('preserves Unicode and Bengali names in CSV and register exports', () {
+      const bengaliName = 'আসিফ হাসান';
+      final escaped = AttendanceCsvBuilder.escapeField(bengaliName);
+      expect(escaped, bengaliName);
+
+      final fullCsv = AttendanceCsvBuilder.buildFullRegisterCsv(
+        courseCode: 'CSE222',
+        courseName: 'Software Engineering',
+        students: [
+          const EnrolledStudent(
+            uid: 's_bengali',
+            displayName: bengaliName,
+            institutionId: '2023-1-60-999',
+            email: 'asif@example.com',
+            isActive: true,
+          ),
+        ],
+        sessions: [],
+        matrix: {},
+      );
+
+      // Verify UTF-8 BOM is present for Excel Unicode support
+      expect(fullCsv.startsWith('\uFEFF'), isTrue);
+      expect(fullCsv.contains(bengaliName), isTrue);
+    });
   });
 }
 

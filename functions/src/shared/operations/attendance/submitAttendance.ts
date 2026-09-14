@@ -41,8 +41,11 @@ export async function submitAttendance(
     .collection("attendanceRecords")
     .doc(`${sessionId}_${studentId}`);
 
-  // Fetch session and private configuration
-  const sessionDocument = await sessionReference.get();
+  // Fetch session and private configuration in parallel
+  const [sessionDocument, configDoc] = await Promise.all([
+    sessionReference.get(),
+    sessionReference.collection("private").doc("config").get(),
+  ]);
   const session = sessionDocument.data();
 
   if (!sessionDocument.exists || !session) {
@@ -56,10 +59,6 @@ export async function submitAttendance(
     );
   }
 
-  const configDoc = await sessionReference
-    .collection("private")
-    .doc("config")
-    .get();
   const configuration = configDoc.data() ?? {};
 
   // Passcode verification with brute-force protection

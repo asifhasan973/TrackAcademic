@@ -1,6 +1,7 @@
 import { getApps, initializeApp, cert, App } from "firebase-admin/app";
 import { getAuth, Auth } from "firebase-admin/auth";
 import { getFirestore, Firestore, FieldValue, Timestamp } from "firebase-admin/firestore";
+import { getMessaging, Messaging } from "firebase-admin/messaging";
 
 export const EXPECTED_PROJECT_ID = "trackacademic-c0d1c";
 
@@ -132,6 +133,11 @@ export function getDb(): Firestore {
 export function getAuthService(): Auth {
   initFirebaseAdmin();
   return getAuth();
+}
+
+export function getMessagingService(): Messaging {
+  initFirebaseAdmin();
+  return getMessaging();
 }
 
 export { FieldValue, Timestamp };

@@ -188,9 +188,10 @@ service cloud.firestore {
     }
 
     match /attendanceSessions/{sessionId} {
-      allow read: if canAccessCourse(
-        resource.data.courseId
-      );
+      allow read: if isVerifiedActiveUser() &&
+          canAccessCourse(
+            resource.data.courseId
+          );
 
       allow write: if false;
 
@@ -200,44 +201,73 @@ service cloud.firestore {
     }
 
     match /attendanceRecords/{recordId} {
-      allow read: if isCourseTeacher(
-            resource.data.courseId
-          ) ||
+      allow read: if isVerifiedActiveUser() &&
           (
-            isCourseStudent(
+            isCourseTeacher(
               resource.data.courseId
-            ) &&
-            resource.data.studentId ==
-              request.auth.uid
+            ) ||
+            (
+              isCourseStudent(
+                resource.data.courseId
+              ) &&
+              resource.data.studentId ==
+                request.auth.uid
+            )
           );
 
       allow write: if false;
     }
 
     match /attendanceSummaries/{summaryId} {
-      allow read: if isCourseTeacher(
-            resource.data.courseId
-          ) ||
+      allow get: if isVerifiedActiveUser() &&
           (
-            isCourseStudent(
+            resource != null ? (
+              isCourseTeacher(
+                resource.data.courseId
+              ) ||
+              (
+                isCourseStudent(
+                  resource.data.courseId
+                ) &&
+                resource.data.studentId ==
+                  request.auth.uid
+              )
+            ) : (
+              // Nonexistent summary get: only permitted if the ID format is {courseId}_{studentUid}
+              // belonging to the authenticated requesting student
+              summaryId.matches('^.+_' + request.auth.uid + '$')
+            )
+          );
+
+      allow list: if isVerifiedActiveUser() &&
+          (
+            isCourseTeacher(
               resource.data.courseId
-            ) &&
-            resource.data.studentId ==
-              request.auth.uid
+            ) ||
+            (
+              isCourseStudent(
+                resource.data.courseId
+              ) &&
+              resource.data.studentId ==
+                request.auth.uid
+            )
           );
 
       allow write: if false;
     }
 
     match /assessments/{assessmentId} {
-      allow read: if isCourseTeacher(
-            resource.data.courseId
-          ) ||
+      allow read: if isVerifiedActiveUser() &&
           (
-            resource.data.status ==
-              'published' &&
-            isCourseStudent(
+            isCourseTeacher(
               resource.data.courseId
+            ) ||
+            (
+              resource.data.status ==
+                'published' &&
+              isCourseStudent(
+                resource.data.courseId
+              )
             )
           );
 
@@ -245,16 +275,19 @@ service cloud.firestore {
     }
 
     match /marks/{markId} {
-      allow read: if isCourseTeacher(
-            resource.data.courseId
-          ) ||
+      allow read: if isVerifiedActiveUser() &&
           (
-            resource.data.published ==
-              true &&
-            resource.data.studentId ==
-              request.auth.uid &&
-            isCourseStudent(
+            isCourseTeacher(
               resource.data.courseId
+            ) ||
+            (
+              resource.data.published ==
+                true &&
+              resource.data.studentId ==
+                request.auth.uid &&
+              isCourseStudent(
+                resource.data.courseId
+              )
             )
           );
 
@@ -262,24 +295,28 @@ service cloud.firestore {
     }
 
     match /schedules/{scheduleId} {
-      allow read: if canAccessCourse(
-        resource.data.courseId
-      );
+      allow read: if isVerifiedActiveUser() &&
+          canAccessCourse(
+            resource.data.courseId
+          );
 
       allow write: if false;
     }
 
     match /academicRecords/{recordId} {
-      allow read: if isCourseTeacher(
-            resource.data.courseId
-          ) ||
+      allow read: if isVerifiedActiveUser() &&
           (
-            resource.data.published ==
-              true &&
-            resource.data.studentId ==
-              request.auth.uid &&
-            isCourseStudent(
+            isCourseTeacher(
               resource.data.courseId
+            ) ||
+            (
+              resource.data.published ==
+                true &&
+              resource.data.studentId ==
+                request.auth.uid &&
+              isCourseStudent(
+                resource.data.courseId
+              )
             )
           );
 
@@ -302,6 +339,10 @@ service cloud.firestore {
           );
 
       allow write: if false;
+    }
+
+    match /idempotencyKeys/{keyId} {
+      allow read, write: if false;
     }
 
     match /notifications/{userId}/items/{notificationId} {

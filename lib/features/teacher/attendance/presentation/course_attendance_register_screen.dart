@@ -1,10 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:trackademic/core/services/attendance_csv_builder.dart';
-import 'package:trackademic/core/services/file_saver/file_saver.dart';
 import 'package:trackademic/core/services/teacher_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/features/teacher/attendance/presentation/export_register_sheet.dart';
 
 class CourseAttendanceRegisterScreen extends StatefulWidget {
   final TeacherCourse course;
@@ -22,7 +21,6 @@ class _CourseAttendanceRegisterScreenState
 
   late Future<_RegisterData> _future;
   _RegisterData? _currentData;
-  bool _exporting = false;
 
   @override
   void initState() {
@@ -87,49 +85,6 @@ class _CourseAttendanceRegisterScreenState
     return data;
   }
 
-  Future<void> _exportCsv(_RegisterData data) async {
-    setState(() => _exporting = true);
-
-    try {
-      final csvContent = AttendanceCsvBuilder.buildFullRegisterCsv(
-        courseCode: data.course.code,
-        courseName: data.course.name,
-        students: data.students,
-        sessions: data.sessions,
-        matrix: data.matrix,
-      );
-
-      final filename = AttendanceCsvBuilder.generateFullRegisterFilename(
-        courseCode: data.course.code,
-      );
-
-      final saver = FileSaver();
-      final destination = await saver.saveFile(
-        filename: filename,
-        content: csvContent,
-        mimeType: 'text/csv',
-      );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Course register exported: $destination'),
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to export CSV: $e')));
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _exporting = false);
-      }
-    }
-  }
 
   Future<void> _correctCell({
     required _RegisterData data,
@@ -315,16 +270,24 @@ class _CourseAttendanceRegisterScreenState
         title: Text('${widget.course.code} Attendance Register'),
         actions: [
           if (_currentData != null)
-            IconButton(
-              tooltip: 'Download CSV',
-              onPressed: _exporting ? null : () => _exportCsv(_currentData!),
-              icon: _exporting
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.download_rounded),
+            TextButton.icon(
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.primary,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+              ),
+              onPressed: () => showExportRegisterSheet(
+                context: context,
+                courseCode: _currentData!.course.code,
+                courseName: _currentData!.course.name,
+                students: _currentData!.students,
+                sessions: _currentData!.sessions,
+                matrix: _currentData!.matrix,
+              ),
+              icon: const Icon(Icons.file_download_outlined, size: 18),
+              label: const Text(
+                'Export Register',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              ),
             ),
           IconButton(
             tooltip: 'Refresh',

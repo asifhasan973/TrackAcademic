@@ -1,8 +1,10 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:trackademic/core/services/teacher_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
+import 'package:trackademic/core/widgets/inline_error_banner.dart';
 import 'package:trackademic/features/teacher/schedule/presentation/teacher_schedule_screen.dart';
 import 'package:trackademic/features/teacher/students/presentation/teacher_student_record_screen.dart';
 
@@ -664,60 +666,149 @@ class _CourseCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: AppSpacing.large),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Wrap(
-              alignment: WrapAlignment.end,
-              spacing: AppSpacing.small,
-              runSpacing: AppSpacing.small,
-              children: [
-                if (course.isActive) ...[
-                  OutlinedButton.icon(
-                    onPressed: onTiming,
-                    icon: const Icon(Icons.calendar_month_rounded, size: 18),
-                    label: const Text('Timing'),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final isNarrow = constraints.maxWidth < 420;
+              const buttonHeight = 42.0;
+              final buttonShape = RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppRadius.small),
+              );
+
+              final timingBtn = OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(0, buttonHeight),
+                  shape: buttonShape,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                ),
+                onPressed: onTiming,
+                icon: const Icon(Icons.calendar_month_rounded, size: 18),
+                label: Text(course.isActive ? 'Timing' : 'View timing'),
+              );
+
+              final manageBtn = OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(0, buttonHeight),
+                  shape: buttonShape,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                ),
+                onPressed: onManageStudents,
+                icon: const Icon(Icons.group_rounded, size: 18),
+                label: Text(
+                  course.isActive ? 'Manage students' : 'View students',
+                ),
+              );
+
+              final editBtn = OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(0, buttonHeight),
+                  shape: buttonShape,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                ),
+                onPressed: onEdit,
+                icon: const Icon(Icons.edit_outlined, size: 18),
+                label: const Text('Edit course'),
+              );
+
+              final archiveBtn = OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.error,
+                  side: const BorderSide(color: AppColors.error),
+                  backgroundColor: AppColors.error.withValues(alpha: 0.04),
+                  minimumSize: const Size(0, buttonHeight),
+                  shape: buttonShape,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                ),
+                onPressed: onArchive,
+                icon: const Icon(
+                  Icons.archive_outlined,
+                  size: 18,
+                  color: AppColors.error,
+                ),
+                label: const Text(
+                  'Archive',
+                  style: TextStyle(
+                    color: AppColors.error,
+                    fontWeight: FontWeight.w600,
                   ),
-                  OutlinedButton.icon(
-                    onPressed: onManageStudents,
-                    icon: const Icon(Icons.group_rounded, size: 18),
-                    label: const Text('Manage students'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: onEdit,
-                    icon: const Icon(Icons.edit_outlined, size: 18),
-                    label: const Text('Edit course'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: onArchive,
-                    icon: const Icon(
-                      Icons.archive_outlined,
-                      size: 18,
-                      color: AppColors.warning,
+                ),
+              );
+
+              final reactivateBtn = FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(0, buttonHeight),
+                  shape: buttonShape,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                ),
+                onPressed: onReactivate,
+                icon: const Icon(Icons.unarchive_outlined, size: 18),
+                label: const Text('Reactivate course'),
+              );
+
+              if (course.isActive) {
+                if (isNarrow) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      timingBtn,
+                      const SizedBox(height: 8),
+                      manageBtn,
+                      const SizedBox(height: 8),
+                      editBtn,
+                      const SizedBox(height: 8),
+                      archiveBtn,
+                    ],
+                  );
+                }
+                return Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(child: timingBtn),
+                        const SizedBox(width: 8),
+                        Expanded(child: manageBtn),
+                      ],
                     ),
-                    label: const Text(
-                      'Archive',
-                      style: TextStyle(color: AppColors.warning),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(child: editBtn),
+                        const SizedBox(width: 8),
+                        Expanded(child: archiveBtn),
+                      ],
                     ),
-                  ),
-                ] else ...[
-                  OutlinedButton.icon(
-                    onPressed: onTiming,
-                    icon: const Icon(Icons.calendar_month_rounded, size: 18),
-                    label: const Text('View timing'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: onManageStudents,
-                    icon: const Icon(Icons.group_rounded, size: 18),
-                    label: const Text('View students'),
-                  ),
-                  FilledButton.icon(
-                    onPressed: onReactivate,
-                    icon: const Icon(Icons.unarchive_outlined, size: 18),
-                    label: const Text('Reactivate course'),
-                  ),
-                ],
-              ],
-            ),
+                  ],
+                );
+              } else {
+                if (isNarrow) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      timingBtn,
+                      const SizedBox(height: 8),
+                      manageBtn,
+                      const SizedBox(height: 8),
+                      reactivateBtn,
+                    ],
+                  );
+                }
+                return Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(child: timingBtn),
+                        const SizedBox(width: 8),
+                        Expanded(child: manageBtn),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: reactivateBtn,
+                    ),
+                  ],
+                );
+              }
+            },
           ),
         ],
       ),
@@ -1118,6 +1209,7 @@ class _CourseStudentsDialogState extends State<CourseStudentsDialog> {
   bool _showInactive = false;
   String? _removingStudentId;
   String? _processingRequestId;
+  String? _dialogError;
 
   @override
   void initState() {
@@ -1194,6 +1286,10 @@ class _CourseStudentsDialogState extends State<CourseStudentsDialog> {
         return;
       }
 
+      setState(() {
+        _dialogError = error.message;
+      });
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(error.message),
@@ -1211,19 +1307,24 @@ class _CourseStudentsDialogState extends State<CourseStudentsDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final mediaQuery = MediaQuery.of(context);
+    final dialogWidth = math.min(650.0, mediaQuery.size.width - 24);
+    final dialogHeight = math.min(540.0, mediaQuery.size.height - 80);
+    final isNarrow = mediaQuery.size.width < 420;
+
     return DefaultTabController(
       length: 2,
-      initialIndex: widget.initialTabIndex.clamp(0, 1),
+      initialIndex: widget.initialTabIndex,
       child: AlertDialog(
-        titlePadding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
-        contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
+        titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.all(8),
+                  padding: const EdgeInsets.all(AppSpacing.small),
                   decoration: BoxDecoration(
                     color: AppColors.primary.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(AppRadius.small),
@@ -1242,16 +1343,27 @@ class _CourseStudentsDialogState extends State<CourseStudentsDialog> {
                       fontSize: 18,
                       fontWeight: FontWeight.w900,
                     ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
             ),
+            if (_dialogError != null) ...[
+              const SizedBox(height: AppSpacing.small),
+              InlineErrorBanner(
+                message: _dialogError!,
+                onDismiss: () => setState(() => _dialogError = null),
+              ),
+            ],
             const SizedBox(height: AppSpacing.medium),
             FutureBuilder<List<TeacherJoinRequest>>(
               future: _requestsFuture,
               builder: (context, reqSnap) {
                 final pendingCount = reqSnap.hasData ? reqSnap.data!.length : 0;
                 return TabBar(
+                  isScrollable: isNarrow,
+                  tabAlignment: isNarrow ? TabAlignment.start : TabAlignment.fill,
                   labelColor: AppColors.primary,
                   unselectedLabelColor: AppColors.textSecondary,
                   indicatorColor: AppColors.primary,
@@ -1259,6 +1371,7 @@ class _CourseStudentsDialogState extends State<CourseStudentsDialog> {
                   tabs: [
                     Tab(
                       child: Row(
+                        mainAxisSize: MainAxisSize.min,
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           const Text('Pending requests'),
@@ -1294,8 +1407,8 @@ class _CourseStudentsDialogState extends State<CourseStudentsDialog> {
           ],
         ),
         content: SizedBox(
-          width: 650,
-          height: 520,
+          width: dialogWidth,
+          height: dialogHeight,
           child: TabBarView(
             children: [_buildPendingRequestsTab(), _buildEnrolledStudentsTab()],
           ),
@@ -1410,86 +1523,171 @@ class _CourseStudentsDialogState extends State<CourseStudentsDialog> {
                   final isTarget = widget.initialRequestId == request.id;
 
                   return Container(
-                    decoration: isTarget
-                        ? BoxDecoration(
-                            color: AppColors.primary.withValues(alpha: 0.05),
-                            borderRadius: BorderRadius.circular(
-                              AppRadius.small,
-                            ),
-                            border: Border.all(
-                              color: AppColors.primary.withValues(alpha: 0.3),
-                            ),
-                          )
-                        : null,
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                      leading: CircleAvatar(
-                        backgroundColor: AppColors.primary.withValues(
-                          alpha: 0.1,
-                        ),
-                        child: const Icon(
-                          Icons.person_outline_rounded,
-                          color: AppColors.primary,
-                        ),
+                    margin: const EdgeInsets.symmetric(vertical: 4),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: isTarget
+                          ? AppColors.primary.withValues(alpha: 0.05)
+                          : AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadius.medium),
+                      border: Border.all(
+                        color: isTarget
+                            ? AppColors.primary.withValues(alpha: 0.4)
+                            : AppColors.border,
                       ),
-                      title: Text(
-                        request.studentName.isNotEmpty
-                            ? request.studentName
-                            : 'Student',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      subtitle: Text(
-                        '${request.institutionId} · ${request.email}',
-                      ),
-                      trailing: isProcessing
-                          ? const SizedBox.square(
-                              dimension: 24,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                OutlinedButton.icon(
-                                  style: OutlinedButton.styleFrom(
-                                    foregroundColor: AppColors.danger,
-                                    side: const BorderSide(
-                                      color: AppColors.danger,
+                    ),
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final isNarrow = constraints.maxWidth < 440;
+                        final actionButtons = isProcessing
+                            ? const SizedBox.square(
+                                dimension: 24,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  OutlinedButton.icon(
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: AppColors.danger,
+                                      side: const BorderSide(
+                                        color: AppColors.danger,
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
+                                      visualDensity: VisualDensity.compact,
                                     ),
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 6,
+                                    onPressed: _processingRequestId != null
+                                        ? null
+                                        : () => _respond(request, false),
+                                    icon: const Icon(
+                                      Icons.close_rounded,
+                                      size: 16,
+                                    ),
+                                    label: const Text('Reject'),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  FilledButton.icon(
+                                    style: FilledButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                    onPressed: (_processingRequestId != null ||
+                                            !widget.course.isActive)
+                                        ? null
+                                        : () => _respond(request, true),
+                                    icon: const Icon(
+                                      Icons.check_rounded,
+                                      size: 16,
+                                    ),
+                                    label: const Text('Approve'),
+                                  ),
+                                ],
+                              );
+
+                        if (isNarrow) {
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  CircleAvatar(
+                                    radius: 18,
+                                    backgroundColor: AppColors.primary.withValues(
+                                      alpha: 0.1,
+                                    ),
+                                    child: const Icon(
+                                      Icons.person_outline_rounded,
+                                      color: AppColors.primary,
+                                      size: 20,
                                     ),
                                   ),
-                                  onPressed: _processingRequestId != null
-                                      ? null
-                                      : () => _respond(request, false),
-                                  icon: const Icon(
-                                    Icons.close_rounded,
-                                    size: 16,
-                                  ),
-                                  label: const Text('Reject'),
-                                ),
-                                const SizedBox(width: 8),
-                                FilledButton.icon(
-                                  style: FilledButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 6,
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          request.studentName.isNotEmpty
+                                              ? request.studentName
+                                              : 'Student',
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14,
+                                          ),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '${request.institutionId} · ${request.email}',
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: AppColors.textSecondary,
+                                          ),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
                                     ),
                                   ),
-                                  onPressed:
-                                      (_processingRequestId != null ||
-                                          !widget.course.isActive)
-                                      ? null
-                                      : () => _respond(request, true),
-                                  icon: const Icon(
-                                    Icons.check_rounded,
-                                    size: 16,
-                                  ),
-                                  label: const Text('Approve'),
-                                ),
-                              ],
+                                ],
+                              ),
+                              const SizedBox(height: 10),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: actionButtons,
+                              ),
+                            ],
+                          );
+                        }
+
+                        return Row(
+                          children: [
+                            CircleAvatar(
+                              backgroundColor: AppColors.primary.withValues(
+                                alpha: 0.1,
+                              ),
+                              child: const Icon(
+                                Icons.person_outline_rounded,
+                                color: AppColors.primary,
+                              ),
                             ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    request.studentName.isNotEmpty
+                                        ? request.studentName
+                                        : 'Student',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  Text(
+                                    '${request.institutionId} · ${request.email}',
+                                    style: const TextStyle(
+                                      color: AppColors.textSecondary,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            actionButtons,
+                          ],
+                        );
+                      },
                     ),
                   );
                 },
@@ -1643,7 +1841,12 @@ class _CourseStudentsDialogState extends State<CourseStudentsDialog> {
                     ),
                     title: Row(
                       children: [
-                        Text(student.displayName),
+                        Flexible(
+                          child: Text(
+                            student.displayName,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                         if (!isEnrolled) ...[
                           const SizedBox(width: AppSpacing.small),
                           Container(

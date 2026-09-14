@@ -32,7 +32,6 @@ class StudentCourseDetailScreen extends StatefulWidget {
 
 class _StudentCourseDetailScreenState extends State<StudentCourseDetailScreen>
     with SingleTickerProviderStateMixin {
-  static const _academicService = AcademicService();
   static const _studentAcademicService = StudentAcademicService();
 
   late final TabController _tabController;
@@ -65,6 +64,30 @@ class _StudentCourseDetailScreenState extends State<StudentCourseDetailScreen>
   }
 
   Future<_CourseDetailBundle> _loadBundle() async {
+    try {
+      return await _fetchBundle();
+    } on FirebaseException catch (error) {
+      if (error.code == 'permission-denied') {
+        final user = FirebaseAuth.instance.currentUser;
+        if (user != null && user.emailVerified) {
+          debugPrint(
+            '[StudentCourseDetail] Permission denied with verified user, refreshing ID token and retrying: $error',
+          );
+          try {
+            await user.getIdToken(true);
+            return await _fetchBundle();
+          } catch (retryErr) {
+            debugPrint(
+              '[StudentCourseDetail] Token refresh retry failed: $retryErr',
+            );
+          }
+        }
+      }
+      rethrow;
+    }
+  }
+
+  Future<_CourseDetailBundle> _fetchBundle() async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) {
       throw const AcademicServiceException('You are not signed in.');
@@ -81,14 +104,20 @@ class _StudentCourseDetailScreenState extends State<StudentCourseDetailScreen>
 
     // 2. Load attendance summary for student
     StudentAttendanceSummary? summary;
-    final summaryDoc = await db
-        .collection('attendanceSummaries')
-        .doc('${widget.courseId}_$uid')
-        .get();
-    if (summaryDoc.exists && summaryDoc.data() != null) {
-      summary = StudentAttendanceSummary.fromMap(
-        summaryDoc.id,
-        summaryDoc.data()!,
+    try {
+      final summaryDoc = await db
+          .collection('attendanceSummaries')
+          .doc('${widget.courseId}_$uid')
+          .get();
+      if (summaryDoc.exists && summaryDoc.data() != null) {
+        summary = StudentAttendanceSummary.fromMap(
+          summaryDoc.id,
+          summaryDoc.data()!,
+        );
+      }
+    } catch (e) {
+      debugPrint(
+        '[StudentCourseDetail] Optional attendance summary not found or pending: $e',
       );
     }
 
@@ -107,9 +136,16 @@ class _StudentCourseDetailScreenState extends State<StudentCourseDetailScreen>
       return bTime.compareTo(aTime);
     });
 
-    // 4. Load published marks for student in this course
-    final allMarks = await _academicService.loadPublishedMarks();
-    final marks = allMarks.where((m) => m.courseId == widget.courseId).toList();
+    // 4. Load published marks directly for this student in this course
+    final marksSnap = await db
+        .collection('marks')
+        .where('courseId', isEqualTo: widget.courseId)
+        .where('studentId', isEqualTo: uid)
+        .where('published', isEqualTo: true)
+        .get();
+    final marks = marksSnap.docs
+        .map((doc) => StudentMarkRecord.fromMap(doc.id, doc.data()))
+        .toList();
     marks.sort((a, b) => a.assessmentName.compareTo(b.assessmentName));
 
     // 5. Load schedules for this course
@@ -254,6 +290,9 @@ class _StudentCourseDetailScreenState extends State<StudentCourseDetailScreen>
           }
 
           if (snapshot.hasError) {
+            debugPrint(
+              '[StudentCourseDetail] Failed to load course ${widget.courseId}: ${snapshot.error}',
+            );
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(AppSpacing.large),
@@ -267,16 +306,16 @@ class _StudentCourseDetailScreenState extends State<StudentCourseDetailScreen>
                     ),
                     const SizedBox(height: AppSpacing.medium),
                     Text(
-                      'Failed to load course details',
+                      'Unable to load course',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.bold,
                       ),
                     ),
                     const SizedBox(height: AppSpacing.small),
-                    Text(
-                      snapshot.error.toString(),
+                    const Text(
+                      'Unable to load course. Please try again.',
                       textAlign: TextAlign.center,
-                      style: const TextStyle(color: AppColors.textSecondary),
+                      style: TextStyle(color: AppColors.textSecondary),
                     ),
                     const SizedBox(height: AppSpacing.large),
                     FilledButton.icon(
@@ -621,29 +660,55 @@ class _StudentCourseDetailScreenState extends State<StudentCourseDetailScreen>
                     ),
                   ),
                 ),
-                const SizedBox(height: AppSpacing.medium),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    _metricItem(
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isNarrow = constraints.maxWidth < 400;
+                    final attendedTile = _metricTile(
                       'Classes Attended',
                       '$attended / $total',
                       Icons.check_circle_outline_rounded,
-                    ),
-                    _metricItem(
+                    );
+                    final marksTile = _metricTile(
                       'Attendance Marks',
                       '${marks.toStringAsFixed(1)} / 10',
                       Icons.calculate_outlined,
-                    ),
-                    _metricItem(
+                    );
+                    final statusTile = _metricTile(
                       'Status',
                       isSafe ? 'Eligible (>=75%)' : 'Short Attendance',
                       isSafe
                           ? Icons.thumb_up_outlined
                           : Icons.warning_amber_rounded,
                       color: isSafe ? AppColors.success : AppColors.danger,
-                    ),
-                  ],
+                      isFullWidth: isNarrow,
+                    );
+
+                    if (isNarrow) {
+                      return Column(
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(child: attendedTile),
+                              const SizedBox(width: 8),
+                              Expanded(child: marksTile),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          statusTile,
+                        ],
+                      );
+                    }
+
+                    return Row(
+                      children: [
+                        Expanded(child: attendedTile),
+                        const SizedBox(width: 8),
+                        Expanded(child: marksTile),
+                        const SizedBox(width: 8),
+                        Expanded(child: statusTile),
+                      ],
+                    );
+                  },
                 ),
               ],
             ),
@@ -768,29 +833,60 @@ class _StudentCourseDetailScreenState extends State<StudentCourseDetailScreen>
     );
   }
 
-  Widget _metricItem(
+  Widget _metricTile(
     String label,
     String value,
     IconData icon, {
     Color? color,
+    bool isFullWidth = false,
   }) {
-    return Column(
-      children: [
-        Icon(icon, size: 20, color: color ?? AppColors.primary),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w800,
-            color: color ?? AppColors.textPrimary,
+    final effectiveColor = color ?? AppColors.primary;
+    return Container(
+      width: isFullWidth ? double.infinity : null,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+      decoration: BoxDecoration(
+        color: effectiveColor.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(AppRadius.medium),
+        border: Border.all(color: effectiveColor.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 16, color: effectiveColor),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textSecondary,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
           ),
-        ),
-        Text(
-          label,
-          style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
-        ),
-      ],
+          const SizedBox(height: 4),
+          Text(
+            value,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: color ?? AppColors.textPrimary,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
     );
   }
 
@@ -1058,12 +1154,12 @@ class _StudentCourseDetailScreenState extends State<StudentCourseDetailScreen>
                 borderRadius: BorderRadius.circular(AppRadius.large),
                 border: Border.all(color: AppColors.border),
               ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 90,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final isNarrow = constraints.maxWidth < 360;
+                  final dayBadge = Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
+                      horizontal: 10,
                       vertical: 6,
                     ),
                     decoration: BoxDecoration(
@@ -1079,31 +1175,51 @@ class _StudentCourseDetailScreenState extends State<StudentCourseDetailScreen>
                         fontSize: 13,
                       ),
                     ),
-                  ),
-                  const SizedBox(width: AppSpacing.medium),
-                  Expanded(
-                    child: Column(
+                  );
+
+                  final details = Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${schedule.startTime} - ${schedule.endTime}',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 15,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      Text(
+                        '${schedule.room} · ${schedule.classType}',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  );
+
+                  if (isNarrow) {
+                    return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          '${schedule.startTime} - ${schedule.endTime}',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w800,
-                            fontSize: 15,
-                            color: AppColors.textPrimary,
-                          ),
-                        ),
-                        Text(
-                          '${schedule.room} · ${schedule.classType}',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: AppColors.textSecondary,
-                          ),
-                        ),
+                        dayBadge,
+                        const SizedBox(height: 8),
+                        details,
                       ],
-                    ),
-                  ),
-                ],
+                    );
+                  }
+
+                  return Row(
+                    children: [
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(minWidth: 95),
+                        child: dayBadge,
+                      ),
+                      const SizedBox(width: AppSpacing.medium),
+                      Expanded(child: details),
+                    ],
+                  );
+                },
               ),
             ),
           ],

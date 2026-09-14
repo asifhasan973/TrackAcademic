@@ -5,6 +5,7 @@ import {
   requireActiveOwnedCourse,
   getCourseNotificationRecipients,
   prepareNotifications,
+  dispatchPushNotifications,
 } from "../../middleware/auth.js";
 import {
   BackendError,
@@ -77,7 +78,7 @@ export async function createAttendanceSession(
   if (requiresGps) {
     latitude = requiredNumber(data.latitude, "Latitude", -90, 90);
     longitude = requiredNumber(data.longitude, "Longitude", -180, 180);
-    radiusMeters = requiredNumber(data.radiusMeters, "Radius", 5, 5000);
+    radiusMeters = requiredNumber(data.radiusMeters, "Radius", 2, 50000);
 
     const teacherAccuracy = optionalNumber(data.accuracy, "Accuracy", 0, 100000);
     const teacherTimestamp = optionalNumber(data.timestamp, "Timestamp", 0, 9999999999999);
@@ -134,7 +135,7 @@ export async function createAttendanceSession(
   const database = getDb();
   const courseRef = database.collection("courses").doc(courseId);
 
-  return await database.runTransaction(async (transaction) => {
+  const result = await database.runTransaction(async (transaction) => {
     const courseDoc = await transaction.get(courseRef);
     if (!courseDoc.exists) {
       throw new BackendError("not-found", "Course not found.");
@@ -292,6 +293,21 @@ export async function createAttendanceSession(
       courseId,
       startedAt: startedAt.toDate().toISOString(),
       endsAt: endsAt.toDate().toISOString(),
+      _notifications: notificationRequests,
     };
   });
+
+  if (result._notifications && result._notifications.length > 0) {
+    await dispatchPushNotifications(database, result._notifications).catch((e) =>
+      console.warn("[FCM] Attendance session push dispatch warning:", e),
+    );
+  }
+
+  return {
+    sessionId: result.sessionId,
+    passcode: result.passcode,
+    courseId: result.courseId,
+    startedAt: result.startedAt,
+    endsAt: result.endsAt,
+  };
 }

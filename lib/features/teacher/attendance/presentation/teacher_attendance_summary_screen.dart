@@ -1,6 +1,8 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:trackademic/core/services/attendance_csv_builder.dart';
-import 'package:trackademic/core/services/file_saver/file_saver.dart';
+import 'package:trackademic/core/services/platform_storage_service.dart';
 import 'package:trackademic/core/services/teacher_academic_service.dart';
 import 'package:trackademic/core/theme/app_colors.dart';
 import 'package:trackademic/core/theme/app_dimensions.dart';
@@ -854,18 +856,25 @@ class _TeacherAttendanceSummaryScreenState
         date: widget.session.startedAt,
       );
 
-      final saver = FileSaver();
-      final destination = await saver.saveFile(
+      const storage = PlatformStorageService();
+      final saved = await storage.saveToDownloads(
         filename: filename,
-        content: csvContent,
+        bytes: Uint8List.fromList(utf8.encode(csvContent)),
         mimeType: 'text/csv',
       );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Attendance report exported: $destination'),
-            duration: const Duration(seconds: 4),
+            content: Text('Saved to ${saved.displayPath}'),
+            duration: const Duration(seconds: 5),
+            action: SnackBarAction(
+              label: 'Open',
+              onPressed: () => storage.openFile(
+                uri: saved.uri,
+                mimeType: saved.mimeType,
+              ),
+            ),
           ),
         );
       }

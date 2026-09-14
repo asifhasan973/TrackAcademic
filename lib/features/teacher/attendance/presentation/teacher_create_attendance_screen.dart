@@ -545,7 +545,7 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
 
   final _passcodeController = TextEditingController();
 
-  final _radiusController = TextEditingController(text: '100');
+  final _radiusController = TextEditingController(text: '20');
 
   String _classType = 'Theory';
 
@@ -602,45 +602,41 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
       'Nov',
       'Dec',
     ];
-    final dateStr =
-        '${weekdays[now.weekday - 1]}, ${months[now.month - 1]} ${now.day}, ${now.year}';
+    final day = weekdays[now.weekday - 1];
+    final month = months[now.month - 1];
+    final formattedDate = '$day, ${now.day} $month ${now.year}';
 
     return AlertDialog(
       title: const Text('Create attendance session'),
-      content: SizedBox(
-        width: 560,
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
         child: SingleChildScrollView(
           child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: AppSpacing.medium,
-                  vertical: AppSpacing.small,
-                ),
+                padding: const EdgeInsets.all(AppSpacing.medium),
                 decoration: BoxDecoration(
-                  color: AppColors.informationBackground,
+                  color: AppColors.surface,
                   borderRadius: BorderRadius.circular(AppRadius.medium),
-                  border: Border.all(
-                    color: AppColors.primary.withValues(alpha: 0.2),
-                  ),
+                  border: Border.all(color: AppColors.border),
                 ),
                 child: Row(
                   children: [
                     const Icon(
                       Icons.calendar_today_rounded,
-                      size: 18,
+                      size: 16,
                       color: AppColors.primary,
                     ),
                     const SizedBox(width: AppSpacing.small),
-                    Expanded(
-                      child: Text(
-                        'Session Date: $dateStr',
-                        style: const TextStyle(
-                          color: AppColors.primary,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 13,
-                        ),
+                    Text(
+                      'Session Date: $formattedDate',
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
                       ),
                     ),
                   ],
@@ -649,12 +645,25 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
               const SizedBox(height: AppSpacing.medium),
               DropdownButtonFormField<String>(
                 initialValue: _courseId,
+                isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Course'),
+                selectedItemBuilder: (context) {
+                  return widget.courses.map((course) {
+                    return Text(
+                      '${course.code} · ${course.name}',
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                    );
+                  }).toList();
+                },
                 items: widget.courses
                     .map(
                       (course) => DropdownMenuItem(
                         value: course.id,
-                        child: Text('${course.code} · ${course.name}'),
+                        child: Text(
+                          '${course.code} · ${course.name}',
+                          softWrap: true,
+                        ),
                       ),
                     )
                     .toList(),
@@ -782,7 +791,7 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
                   decoration: const InputDecoration(
                     labelText: 'Allowed radius (meters)',
                     helperText:
-                        'Students must be within this distance from your current location.',
+                        'Students must be within 2m to 50,000m (default: 20m).',
                   ),
                 ),
               ],
@@ -894,9 +903,11 @@ class _CreateSessionDialogState extends State<CreateSessionDialog> {
         ? double.tryParse(_radiusController.text.trim())
         : null;
 
-    if (_requiresGps && (radius == null || radius <= 0)) {
+    if (_requiresGps && (radius == null || radius < 2 || radius > 50000)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a valid GPS radius.')),
+        const SnackBar(
+          content: Text('Radius must be between 2 and 50,000 meters.'),
+        ),
       );
 
       return;
@@ -1205,59 +1216,87 @@ class _AttendanceMonitorDialogState extends State<_AttendanceMonitorDialog> {
                       borderRadius: BorderRadius.circular(AppRadius.medium),
                       border: Border.all(color: AppColors.border),
                     ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.key_rounded,
-                          size: 18,
-                          color: AppColors.primary,
-                        ),
-                        const SizedBox(width: AppSpacing.small),
-                        Text(
-                          _passcode != null
-                              ? 'Passcode: $_passcode'
-                              : 'Passcode hidden for security',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                          ),
-                        ),
-                        if (_passcode != null) ...[
-                          const SizedBox(width: AppSpacing.small),
-                          IconButton(
-                            iconSize: 18,
-                            tooltip: 'Copy passcode',
-                            icon: const Icon(Icons.copy_rounded),
-                            onPressed: () {
-                              Clipboard.setData(
-                                ClipboardData(text: _passcode!),
-                              );
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Passcode copied to clipboard'),
-                                ),
-                              );
-                            },
-                          ),
-                        ],
-                        const Spacer(),
-                        if (widget.session.status == 'active')
-                          OutlinedButton.icon(
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 6,
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final isNarrow = constraints.maxWidth < 420;
+                        final passcodePart = Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.key_rounded,
+                              size: 18,
+                              color: AppColors.primary,
+                            ),
+                            const SizedBox(width: AppSpacing.small),
+                            Text(
+                              _passcode != null
+                                  ? 'Passcode: $_passcode'
+                                  : 'Passcode hidden for security',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
                               ),
-                              visualDensity: VisualDensity.compact,
                             ),
-                            onPressed: _resetPasscode,
-                            icon: const Icon(Icons.refresh_rounded, size: 16),
-                            label: const Text(
-                              'Reset passcode',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                          ),
-                      ],
+                            if (_passcode != null) ...[
+                              const SizedBox(width: AppSpacing.small),
+                              IconButton(
+                                iconSize: 18,
+                                tooltip: 'Copy passcode',
+                                icon: const Icon(Icons.copy_rounded),
+                                onPressed: () {
+                                  Clipboard.setData(
+                                    ClipboardData(text: _passcode!),
+                                  );
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Passcode copied to clipboard'),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ],
+                          ],
+                        );
+
+                        final resetBtn = (widget.session.status == 'active')
+                            ? OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                                onPressed: _resetPasscode,
+                                icon: const Icon(Icons.refresh_rounded, size: 16),
+                                label: const Text(
+                                  'Reset passcode',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                              )
+                            : const SizedBox.shrink();
+
+                        if (isNarrow) {
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              passcodePart,
+                              if (widget.session.status == 'active') ...[
+                                const SizedBox(height: 6),
+                                resetBtn,
+                              ],
+                            ],
+                          );
+                        }
+
+                        return Row(
+                          children: [
+                            passcodePart,
+                            const Spacer(),
+                            resetBtn,
+                          ],
+                        );
+                      },
                     ),
                   ),
                 ],
@@ -1429,55 +1468,22 @@ class TeacherAttendanceSessionCard extends StatelessWidget {
     final now = DateTime.now();
     if (now.isAfter(endsAt)) {
       return session.allowLateEntry
-          ? 'Active (Late entries allowed)'
-          : 'Expired (Submissions closed)';
+          ? 'Late entries'
+          : 'Expired';
     }
     final duration = endsAt.difference(now);
     final min = duration.inMinutes;
     final sec = duration.inSeconds % 60;
-    return 'Active ($min:${sec.toString().padLeft(2, '0')} remaining)';
+    return '$min:${sec.toString().padLeft(2, '0')} left';
   }
 
   @override
   Widget build(BuildContext context) {
-    final details = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          '${session.courseCode} · ${session.courseName}',
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          '${session.classType} · ${session.durationMinutes} min · $_timingLabel',
-          style: const TextStyle(color: AppColors.textSecondary),
-        ),
-        if (session.requiresGps) ...[
-          const SizedBox(height: 2),
-          const Text(
-            'GPS verification enabled',
-            style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
-          ),
-        ],
-      ],
-    );
-
-    final actions = Wrap(
-      spacing: AppSpacing.small,
-      runSpacing: AppSpacing.small,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        OutlinedButton(onPressed: onView, child: const Text('Monitor')),
-        if (session.status == 'closed')
-          FilledButton.icon(
-            onPressed: onSummary,
-            icon: const Icon(Icons.analytics_outlined, size: 18),
-            label: const Text('View summary'),
-          ),
-        if (onClose != null)
-          FilledButton(onPressed: onClose, child: const Text('Close session')),
-      ],
-    );
+    final isClosed = session.status == 'closed';
+    final statusColor = isClosed ? AppColors.textSecondary : AppColors.success;
+    final statusBg = isClosed
+        ? AppColors.surface
+        : AppColors.successBackground;
 
     return Material(
       color: AppColors.surface,
@@ -1486,17 +1492,147 @@ class TeacherAttendanceSessionCard extends StatelessWidget {
         side: const BorderSide(color: AppColors.border),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.large),
+        padding: const EdgeInsets.all(AppSpacing.regular),
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final isNarrow = constraints.maxWidth < 620;
+            final isNarrow = constraints.maxWidth < 520;
+
+            final details = Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.informationBackground,
+                        borderRadius: BorderRadius.circular(AppRadius.small),
+                      ),
+                      child: Text(
+                        session.courseCode,
+                        style: const TextStyle(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.small),
+                    Expanded(
+                      child: Text(
+                        session.courseName,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.textPrimary,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.small),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    _Chip(
+                      icon: isClosed ? Icons.lock_outline : Icons.sensors_rounded,
+                      label: _timingLabel,
+                      color: statusColor,
+                      bgColor: statusBg,
+                    ),
+                    _Chip(
+                      icon: Icons.school_outlined,
+                      label: session.classType,
+                      color: AppColors.textSecondary,
+                      bgColor: const Color(0xFFF1F5F9),
+                    ),
+                    _Chip(
+                      icon: Icons.timer_outlined,
+                      label: '${session.durationMinutes} min',
+                      color: AppColors.textSecondary,
+                      bgColor: const Color(0xFFF1F5F9),
+                    ),
+                    if (session.requiresGps)
+                      const _Chip(
+                        icon: Icons.location_on_outlined,
+                        label: 'GPS verified',
+                        color: AppColors.primary,
+                        bgColor: AppColors.informationBackground,
+                      ),
+                  ],
+                ),
+              ],
+            );
+
+            final buttonStyle = OutlinedButton.styleFrom(
+              minimumSize: const Size(100, 38),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppRadius.medium),
+              ),
+            );
+
+            final filledStyle = FilledButton.styleFrom(
+              minimumSize: const Size(100, 38),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppRadius.medium),
+              ),
+            );
+
+            final monitorBtn = OutlinedButton.icon(
+              style: buttonStyle,
+              onPressed: onView,
+              icon: const Icon(Icons.visibility_outlined, size: 16),
+              label: const Text('Monitor'),
+            );
+
+            final summaryBtn = isClosed
+                ? FilledButton.icon(
+                    style: filledStyle,
+                    onPressed: onSummary,
+                    icon: const Icon(Icons.analytics_outlined, size: 16),
+                    label: const Text('Summary'),
+                  )
+                : null;
+
+            final closeBtn = onClose != null
+                ? FilledButton.icon(
+                    style: filledStyle.copyWith(
+                      backgroundColor: const WidgetStatePropertyAll(AppColors.danger),
+                    ),
+                    onPressed: onClose,
+                    icon: const Icon(Icons.stop_circle_outlined, size: 16),
+                    label: const Text('Close'),
+                  )
+                : null;
+
             if (isNarrow) {
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   details,
                   const SizedBox(height: AppSpacing.medium),
-                  actions,
+                  Row(
+                    children: [
+                      Expanded(child: monitorBtn),
+                      if (summaryBtn != null) ...[
+                        const SizedBox(width: AppSpacing.small),
+                        Expanded(child: summaryBtn),
+                      ],
+                      if (closeBtn != null) ...[
+                        const SizedBox(width: AppSpacing.small),
+                        Expanded(child: closeBtn),
+                      ],
+                    ],
+                  ),
                 ],
               );
             }
@@ -1505,11 +1641,64 @@ class TeacherAttendanceSessionCard extends StatelessWidget {
               children: [
                 Expanded(child: details),
                 const SizedBox(width: AppSpacing.medium),
-                actions,
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    monitorBtn,
+                    if (summaryBtn != null) ...[
+                      const SizedBox(width: AppSpacing.small),
+                      summaryBtn,
+                    ],
+                    if (closeBtn != null) ...[
+                      const SizedBox(width: AppSpacing.small),
+                      closeBtn,
+                    ],
+                  ],
+                ),
               ],
             );
           },
         ),
+      ),
+    );
+  }
+}
+
+class _Chip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final Color bgColor;
+
+  const _Chip({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.bgColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(AppRadius.small),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
       ),
     );
   }

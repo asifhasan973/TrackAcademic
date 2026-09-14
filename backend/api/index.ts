@@ -1,4 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "http";
+import { FieldValue } from "firebase-admin/firestore";
+import { getDb } from "../src/firebaseAdmin.js";
 import { verifyBearerToken } from "../src/middleware/auth.js";
 import { BackendError, RequestContext } from "../src/types.js";
 import { OPERATIONS } from "../src/operations/index.js";
@@ -166,7 +168,51 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ? body.data
         : body ?? {};
 
+    // Check idempotency if key provided
+    const rawIdem = req.headers["x-idempotency-key"] || (payload && payload.idempotencyKey);
+    const idempotencyKey = typeof rawIdem === "string" && rawIdem.trim().length > 0 ? rawIdem.trim() : null;
+
+    if (idempotencyKey && context.auth) {
+      try {
+        const db = getDb();
+        const existing = await db.collection("idempotencyKeys").doc(idempotencyKey).get();
+        if (existing.exists) {
+          const stored = existing.data();
+          if (stored && stored.status === "completed" && stored.uid === context.auth.uid) {
+            console.log(`[IDEMPOTENCY_HIT] Returning cached result for key ${idempotencyKey}`);
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/json");
+            res.end(
+              JSON.stringify({
+                result: stored.result ?? {},
+                data: stored.result ?? {},
+              }),
+            );
+            return;
+          }
+        }
+      } catch (checkErr) {
+        console.warn("[IDEMPOTENCY_CHECK_WARN]", checkErr);
+      }
+    }
+
     const result = await handlerFn(payload, context);
+
+    if (idempotencyKey && context.auth) {
+      try {
+        const db = getDb();
+        await db.collection("idempotencyKeys").doc(idempotencyKey).set({
+          idempotencyKey,
+          operation,
+          status: "completed",
+          result: result ?? {},
+          createdAt: FieldValue.serverTimestamp(),
+          uid: context.auth.uid,
+        });
+      } catch (storeErr) {
+        console.warn("[IDEMPOTENCY_STORE_WARN]", storeErr);
+      }
+    }
 
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");

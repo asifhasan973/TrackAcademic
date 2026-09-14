@@ -31,6 +31,8 @@ class AppColors {
 
   static const Color danger = Color(0xFFD64545);
   static const Color dangerBackground = Color(0xFFFFECEC);
+  static const Color error = danger;
+  static const Color errorBackground = dangerBackground;
 
   static const Color information = Color(0xFF3454D1);
   static const Color informationBackground = Color(0xFFEAF0FF);

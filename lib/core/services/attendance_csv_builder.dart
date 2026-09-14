@@ -5,18 +5,30 @@ import 'package:trackademic/core/services/teacher_academic_service.dart';
 /// Fully decoupled from platform file-saving and UI layers so it can be
 /// thoroughly unit tested.
 abstract final class AttendanceCsvBuilder {
-  /// Escapes a field according to RFC 4180.
+  /// Escapes a field according to RFC 4180 and protects against spreadsheet-formula injection.
   ///
+  /// If [value] starts with formula operators (=, +, -, @, \t, \r), it is safely prefixed with a single quote.
   /// If [value] contains commas, double quotes, or newlines, it is enclosed
   /// in double quotes, with internal quotes doubled (`""`).
   static String escapeField(String value) {
-    if (value.contains(',') ||
-        value.contains('"') ||
-        value.contains('\n') ||
-        value.contains('\r')) {
-      return '"${value.replaceAll('"', '""')}"';
+    var sanitized = value;
+    if (sanitized.isNotEmpty &&
+        (sanitized.startsWith('=') ||
+            sanitized.startsWith('+') ||
+            sanitized.startsWith('-') ||
+            sanitized.startsWith('@') ||
+            sanitized.startsWith('\t') ||
+            sanitized.startsWith('\r'))) {
+      sanitized = "'$sanitized";
     }
-    return value;
+
+    if (sanitized.contains(',') ||
+        sanitized.contains('"') ||
+        sanitized.contains('\n') ||
+        sanitized.contains('\r')) {
+      return '"${sanitized.replaceAll('"', '""')}"';
+    }
+    return sanitized;
   }
 
   /// Sanitizes string components for safe filenames across filesystems.
@@ -128,6 +140,11 @@ abstract final class AttendanceCsvBuilder {
     required Map<String, Map<String, String>> matrix,
   }) {
     final buffer = StringBuffer();
+    // Prepend UTF-8 BOM so Excel/LibreOffice properly renders Unicode and Bengali names
+    buffer.write('\uFEFF');
+    buffer.write('Course Code,${escapeField(courseCode)}\r\n');
+    buffer.write('Course Name,${escapeField(courseName)}\r\n');
+    buffer.write('Export Date,${escapeField(formatDateTime(DateTime.now()))}\r\n\r\n');
 
     final header = <String>[
       escapeField('Student Name'),

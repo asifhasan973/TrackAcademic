@@ -1,4 +1,4 @@
-import { getAuthService, getDb } from "../firebaseAdmin.js";
+import { getAuthService, getDb, getMessagingService } from "../firebaseAdmin.js";
 import { BackendError, RequestContext } from "../types.js";
 
 export async function verifyBearerToken(authHeader?: string): Promise<RequestContext["auth"]> {
@@ -22,6 +22,18 @@ export async function verifyBearerToken(authHeader?: string): Promise<RequestCon
       token: decoded,
     };
   } catch (error: any) {
+    if (error?.code === "auth/id-token-revoked") {
+      throw new BackendError(
+        "unauthenticated",
+        "Your session was revoked. Please sign in again.",
+      );
+    }
+    if (error?.code === "auth/user-disabled") {
+      throw new BackendError(
+        "unauthenticated",
+        "This user account has been disabled.",
+      );
+    }
     throw new BackendError(
       "unauthenticated",
       "Authentication failed. The session may have expired. Please sign in again.",
@@ -41,8 +53,8 @@ export async function isUserEmailVerified(
     return true;
   }
 
-  if (auth && typeof auth.email_verified === "boolean") {
-    return auth.email_verified;
+  if (auth && auth.email_verified === true) {
+    return true;
   }
 
   try {
@@ -283,5 +295,141 @@ export function commitNotificationsInBatch(
         updatedAt: timestamp,
       });
     }
+  }
+}
+
+/**
+ * Dispatches real Firebase Cloud Messaging push notifications to recipient devices.
+ * - Queries users/{uid}/deviceTokens for multiple devices per user.
+ * - Cleans up dead/unregistered tokens automatically.
+ * - Handles errors gracefully without failing database transactions.
+ */
+export async function dispatchPushNotifications(
+  database: FirebaseFirestore.Firestore,
+  notifications: Array<{ id: string; payload: NotificationPayload }>,
+): Promise<void> {
+  if (!notifications || notifications.length === 0) return;
+
+  try {
+    const messaging = getMessagingService();
+
+    // Group notifications by recipient user ID
+    const byUser = new Map<string, Array<{ id: string; payload: NotificationPayload }>>();
+    for (const n of notifications) {
+      const uid = n.payload.userId;
+      if (!uid) continue;
+      const list = byUser.get(uid) || [];
+      list.push(n);
+      byUser.set(uid, list);
+    }
+
+    const userIds = Array.from(byUser.keys());
+    const tokenDocs = await Promise.all(
+      userIds.map(async (uid) => {
+        try {
+          const snap = await database
+            .collection("users")
+            .doc(uid)
+            .collection("deviceTokens")
+            .get();
+          return {
+            uid,
+            tokens: snap.docs.map((doc) => ({
+              id: doc.id,
+              token: doc.data().token as string,
+              ref: doc.ref,
+            })),
+          };
+        } catch (err) {
+          console.error(`[FCM] Failed to fetch device tokens for user ${uid}:`, err);
+          return { uid, tokens: [] };
+        }
+      }),
+    );
+
+    const messagesToSend: Array<{
+      message: any;
+      tokenRef: FirebaseFirestore.DocumentReference;
+    }> = [];
+
+    const seenTokenPerNotif = new Set<string>();
+    for (const { uid, tokens } of tokenDocs) {
+      if (!tokens.length) continue;
+      const userNotifs = byUser.get(uid) || [];
+      for (const notif of userNotifs) {
+        for (const tokenItem of tokens) {
+          if (!tokenItem.token || typeof tokenItem.token !== "string") continue;
+          const dedupeKey = `${notif.id}_${tokenItem.token}`;
+          if (seenTokenPerNotif.has(dedupeKey)) continue;
+          seenTokenPerNotif.add(dedupeKey);
+
+          messagesToSend.push({
+            tokenRef: tokenItem.ref,
+            message: {
+              token: tokenItem.token,
+              notification: {
+                title: notif.payload.title,
+                body: notif.payload.message,
+              },
+              data: {
+                notificationId: notif.id,
+                type: notif.payload.type,
+                courseId: notif.payload.courseId || "",
+                entityId: notif.payload.entityId || "",
+                userId: notif.payload.userId,
+              },
+              android: {
+                priority: "high" as const,
+                notification: {
+                  channelId: "trackacademic_general",
+                  clickAction: "FLUTTER_NOTIFICATION_CLICK",
+                  sound: "default",
+                },
+              },
+            },
+          });
+        }
+      }
+    }
+
+    if (!messagesToSend.length) return;
+
+    // Bounded delivery work: max 6 seconds to prevent serverless execution hangs
+    await Promise.race([
+      (async () => {
+        for (let i = 0; i < messagesToSend.length; i += 500) {
+          const chunk = messagesToSend.slice(i, i + 500);
+          const response = await messaging.sendEach(chunk.map((c) => c.message));
+          const deadRefs: FirebaseFirestore.DocumentReference[] = [];
+
+          response.responses.forEach((resp, idx) => {
+            if (!resp.success && resp.error) {
+              const code = resp.error.code;
+              if (
+                code === "messaging/invalid-registration-token" ||
+                code === "messaging/registration-token-not-registered"
+              ) {
+                deadRefs.push(chunk[idx]!.tokenRef);
+              }
+            }
+          });
+
+          if (deadRefs.length > 0) {
+            const batch = database.batch();
+            for (const ref of deadRefs) {
+              batch.delete(ref);
+            }
+            await batch.commit().catch(() => {});
+          }
+        }
+      })(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Push dispatch timed out after 6s")), 6000),
+      ),
+    ]).catch((err) => {
+      console.warn("[FCM_DISPATCH_TIMEOUT_OR_ERR]", err);
+    });
+  } catch (err) {
+    console.error("[FCM] dispatchPushNotifications top-level error:", err);
   }
 }

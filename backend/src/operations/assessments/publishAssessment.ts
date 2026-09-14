@@ -3,6 +3,7 @@ import {
   requireActiveTeacher,
   getCourseNotificationRecipients,
   prepareNotifications,
+  dispatchPushNotifications,
 } from "../../middleware/auth.js";
 import {
   BackendError,
@@ -28,7 +29,8 @@ export async function publishAssessment(
   const database = getDb();
   const reference = database.collection("assessments").doc(assessmentId);
 
-  return await database.runTransaction(async (transaction) => {
+  let pendingNotifItems: any[] = [];
+  const result = await database.runTransaction(async (transaction) => {
     const document = await transaction.get(reference);
     if (!document.exists || !document.data()) {
       throw new BackendError("not-found", "Assessment not found.");
@@ -93,6 +95,7 @@ export async function publishAssessment(
       transaction,
       notificationRequests,
     );
+    pendingNotifItems = notifItems;
 
     const timestamp = FieldValue.serverTimestamp();
 
@@ -150,4 +153,10 @@ export async function publishAssessment(
       publishedMarksCount: marksSnapshot.docs.length,
     };
   });
+
+  if (pendingNotifItems.length > 0) {
+    await dispatchPushNotifications(database, pendingNotifItems);
+  }
+
+  return result;
 }

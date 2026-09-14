@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:trackademic/core/models/user_role.dart';
 import 'package:trackademic/core/services/auth_service.dart';
+import 'package:trackademic/core/services/push_notification_service.dart';
 import 'package:trackademic/core/services/teacher_academic_service.dart';
 import 'package:trackademic/features/authentication/presentation/sign_in_screen.dart';
 import 'package:trackademic/features/ui_preview/presentation/role_workspace_screen.dart';
@@ -61,6 +62,19 @@ class _WorkspaceLoaderState extends State<_WorkspaceLoader> {
 
   Future<UserRole> _resolveRole() async {
     final profile = await _authService.loadCurrentProfile();
+
+    // Request notification permission and register device token for push notifications
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid != null) {
+      PushNotificationService().requestPermission().then((granted) {
+        if (granted) {
+          PushNotificationService().registerUserDevice(uid);
+        }
+      }).catchError((e) {
+        debugPrint('[AuthGate] FCM token registration error: $e');
+      });
+    }
+
     final roleString = profile.role?.trim().toLowerCase();
     if (roleString == 'teacher') {
       return UserRole.teacher;
@@ -109,10 +123,31 @@ class _EmailVerificationScreen extends StatefulWidget {
       _EmailVerificationScreenState();
 }
 
-class _EmailVerificationScreenState extends State<_EmailVerificationScreen> {
+class _EmailVerificationScreenState extends State<_EmailVerificationScreen>
+    with WidgetsBindingObserver {
   static const _authService = AuthService();
 
   bool _isWorking = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !_isWorking) {
+      // User may have just returned to the app after clicking the email link
+      _checkVerification(silent: true);
+    }
+  }
 
   Future<void> _resendEmail() async {
     await _performAction(() async {
@@ -128,7 +163,7 @@ class _EmailVerificationScreenState extends State<_EmailVerificationScreen> {
     });
   }
 
-  Future<void> _checkVerification() async {
+  Future<void> _checkVerification({bool silent = false}) async {
     await _performAction(() async {
       final verified = await _authService.refreshEmailVerification();
 
@@ -136,7 +171,7 @@ class _EmailVerificationScreenState extends State<_EmailVerificationScreen> {
         return;
       }
 
-      if (!verified) {
+      if (!verified && !silent) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(

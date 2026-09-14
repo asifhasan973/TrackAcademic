@@ -2,6 +2,7 @@ import { getDb, FieldValue } from "../../firebaseAdmin.js";
 import {
   requireActiveStudent,
   prepareNotifications,
+  dispatchPushNotifications,
 } from "../../middleware/auth.js";
 import {
   BackendError,
@@ -44,7 +45,8 @@ export async function requestJoinCourse(
     .collection("courseJoinRequests")
     .doc(`${courseId}_${studentId}`);
 
-  return await database.runTransaction(async (transaction) => {
+  let pendingNotifItems: any[] = [];
+  const result = await database.runTransaction(async (transaction) => {
     const courseDoc = await transaction.get(courseRef);
     if (!courseDoc.exists) {
       throw new BackendError("not-found", "No course was found for this join code.");
@@ -99,6 +101,8 @@ export async function requestJoinCourse(
       },
     ]);
 
+    pendingNotifItems = notifItems;
+
     transaction.set(requestReference, {
       courseId,
       courseCode: course.code ?? "",
@@ -143,4 +147,10 @@ export async function requestJoinCourse(
       courseId,
     };
   });
+
+  if (pendingNotifItems.length > 0) {
+    await dispatchPushNotifications(database, pendingNotifItems);
+  }
+
+  return result;
 }
