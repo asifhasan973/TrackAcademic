@@ -7,8 +7,7 @@ service cloud.firestore {
     }
 
     function isEmailVerified() {
-      return isSignedIn() &&
-          request.auth.token.email_verified == true;
+      return isSignedIn();
     }
 
     function profileExists() {

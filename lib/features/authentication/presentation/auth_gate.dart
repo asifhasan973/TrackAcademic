@@ -32,10 +32,6 @@ class AuthGate extends StatelessWidget {
           return const SignInScreen();
         }
 
-        if (!user.emailVerified) {
-          return const _EmailVerificationScreen();
-        }
-
         return _WorkspaceLoader(key: ValueKey(user.uid));
       },
     );

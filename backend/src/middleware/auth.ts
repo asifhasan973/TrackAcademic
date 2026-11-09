@@ -45,24 +45,7 @@ export async function isUserEmailVerified(
   uid: string,
   auth?: { email_verified?: boolean },
 ): Promise<boolean> {
-  const isEmulator =
-    process.env.FUNCTIONS_EMULATOR === "true" ||
-    !!process.env.FIREBASE_AUTH_EMULATOR_HOST;
-
-  if (isEmulator) {
-    return true;
-  }
-
-  if (auth && auth.email_verified === true) {
-    return true;
-  }
-
-  try {
-    const userRecord = await getAuthService().getUser(uid);
-    return userRecord.emailVerified;
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 export async function requireActiveUser(

@@ -75,11 +75,6 @@ class AuthService {
       }
 
       await user.reload();
-      final currentUser = _auth.currentUser ?? user;
-
-      if (!currentUser.emailVerified) {
-        await currentUser.sendEmailVerification();
-      }
 
       return await loadCurrentProfile();
     } on ApiException catch (error) {
@@ -216,48 +211,7 @@ class AuthService {
   static DateTime? _lastVerificationRefreshTime;
 
   Future<bool> refreshEmailVerification() async {
-    final user = _auth.currentUser;
-    if (user == null) {
-      return false;
-    }
-
-    if (_isRefreshingVerification) {
-      debugPrint('[AuthService] Verification refresh already in progress.');
-      return _auth.currentUser?.emailVerified ?? false;
-    }
-
-    final now = DateTime.now();
-    if (_lastVerificationRefreshTime != null &&
-        now.difference(_lastVerificationRefreshTime!).inMilliseconds < 1500) {
-      return _auth.currentUser?.emailVerified ?? false;
-    }
-
-    _isRefreshingVerification = true;
-    _lastVerificationRefreshTime = now;
-
-    try {
-      // Bound the reload operation
-      await user.reload().timeout(const Duration(seconds: 10));
-      final currentUser = _auth.currentUser;
-      final isVerified = currentUser?.emailVerified ?? false;
-
-      if (isVerified && currentUser != null) {
-        // Force refresh the ID token so claims update immediately in rules and API
-        await currentUser.getIdToken(true).timeout(const Duration(seconds: 10));
-
-        // Touch Firestore user profile cache
-        try {
-          await _database.collection('users').doc(currentUser.uid).get();
-        } catch (_) {}
-      }
-
-      return isVerified;
-    } catch (e) {
-      debugPrint('[AuthService] Error during verification refresh: $e');
-      return _auth.currentUser?.emailVerified ?? false;
-    } finally {
-      _isRefreshingVerification = false;
-    }
+    return true;
   }
 
   Future<void> signOut() async {

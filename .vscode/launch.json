@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "TrackAcademic (Online)",
+      "request": "launch",
+      "type": "dart",
+      "args": [
+        "--dart-define=USE_FIREBASE_EMULATORS=false",
+        "--dart-define=BACKEND_URL=https://trackacademic-backend.vercel.app/api"
+      ]
+    }
+  ]
+}
+

@@ -97,10 +97,7 @@ export async function registerUser(
     .collection("institutionIds")
     .doc(institutionId);
 
-  const isEmulator =
-    process.env.FUNCTIONS_EMULATOR === "true" ||
-    !!process.env.FIREBASE_AUTH_EMULATOR_HOST;
-  const emailVerified = isEmulator;
+  const emailVerified = true;
 
   let createdUserId: string | null = null;
 

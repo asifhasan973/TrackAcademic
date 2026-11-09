@@ -21,7 +21,7 @@ class ApiException implements Exception {
 abstract final class ApiClient {
   static const String _configuredBackendUrl = String.fromEnvironment(
     'BACKEND_URL',
-    defaultValue: '',
+    defaultValue: 'https://trackacademic-backend.vercel.app/api',
   );
 
   static const Set<String> _safeIdempotentOperations = {
